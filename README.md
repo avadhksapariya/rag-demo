@@ -19,11 +19,17 @@ PDF → Chunking → Embeddings → ChromaDB
 Question → Retrieval → Gemini LLM → Answer
 ```
 
-## Run
+## Necessary Commands
 
-Add your Gemini API key to `.env` and run:
+- Virtual environment:  
+    - Create : `python -m venv .venv`  
+    - Activate : `.\venv\Scripts\Activate`
 
-`py main.py`
+- Install dependencies:  
+    `pip install -r requirements.txt`
+
+- Add Gemini API key to `.env` and run:  
+    `py main.py`
 
 The application provides options to ingest the PDF, ask questions, or exit.
 
