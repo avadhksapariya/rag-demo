@@ -1,5 +1,5 @@
 from pathlib import Path
-from langchain_community.document_loaders import PyPDFLoader
+from langchain_community.document_loaders import PyMuPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_chroma import Chroma
@@ -17,7 +17,7 @@ def process_pdf_and_ingest(
         raise FileNotFoundError(f"Please place a PDF file at: {pdf_path}")
 
     print(f"📄 Loading PDF: {pdf_path}...")
-    loader = PyPDFLoader(pdf_path)
+    loader = PyMuPDFLoader(pdf_path)
     documents = loader.load()
 
     print("✂️  Chunking document...")
