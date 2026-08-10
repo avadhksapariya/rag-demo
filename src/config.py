@@ -12,5 +12,8 @@ DB_PATH = BASE_DIR / "vector_db"
 
 PDF_PATH = BASE_DIR / "data" / "SamudraManthan-ChurningOfTheOcean.pdf"
 
-# Number of chunks retrieved for each question.
-RETRIEVAL_K = 3
+# Stage 1: Fetch 10 initial candidates from ChromaDB
+INITIAL_RETRIEVAL_K = 10
+
+# Stage 2: Reranker selects top 3 best candidates for Gemini
+FINAL_RETRIEVAL_K = 3

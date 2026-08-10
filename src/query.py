@@ -11,8 +11,16 @@ from langchain_classic.chains.history_aware_retriever import (
 )
 from langchain_classic.chains.retrieval import create_retrieval_chain
 from langchain_classic.chains.combine_documents import create_stuff_documents_chain
+from langchain_classic.retrievers import ContextualCompressionRetriever
+from langchain_community.document_compressors.flashrank_rerank import FlashrankRerank
 
-from src.config import EMBEDDING_MODEL, LLM_MODEL, DB_PATH, RETRIEVAL_K
+from src.config import (
+    EMBEDDING_MODEL,
+    LLM_MODEL,
+    DB_PATH,
+    INITIAL_RETRIEVAL_K,
+    FINAL_RETRIEVAL_K,
+)
 
 
 # Formats retrieved chunks with clear page markers for inline citing.
@@ -34,13 +42,18 @@ def answer_question(
             f"Vector store not found at '{db_path}'. Please run ingestion first!"
         )
 
-    # Load Vector Store & Model
+    # Load Vector Store & Base Retriever (Stage 1: Fetch 10 candidates)
     embeddings = GoogleGenerativeAIEmbeddings(model=EMBEDDING_MODEL)
     vector_db = Chroma(
         persist_directory=str(db_path),
         embedding_function=embeddings,
     )
-    base_retriever = vector_db.as_retriever(search_kwargs={"k": RETRIEVAL_K})
+    base_retriever = vector_db.as_retriever(search_kwargs={"k": INITIAL_RETRIEVAL_K})
+
+    compressor = FlashrankRerank(top_n=FINAL_RETRIEVAL_K)
+    rerank_retriever = ContextualCompressionRetriever(
+        base_compressor=compressor, base_retriever=base_retriever
+    )
 
     llm = ChatGoogleGenerativeAI(model=LLM_MODEL)
 
@@ -63,7 +76,7 @@ def answer_question(
     )
 
     history_aware_retriever = create_history_aware_retriever(
-        llm, base_retriever, contextualize_q_prompt
+        llm, rerank_retriever, contextualize_q_prompt
     )
 
     # Define how EACH document chunk is formatted before insertion into context
