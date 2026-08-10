@@ -5,6 +5,8 @@ from dotenv import load_dotenv
 # Automatically load environment variables from .env file
 load_dotenv()
 
+from langchain_core.messages import HumanMessage, AIMessage
+
 from src.ingest import process_pdf_and_ingest
 from src.query import answer_question
 from src.config import PDF_PATH, DB_PATH
@@ -15,8 +17,45 @@ def print_menu():
     print("        RAG DEMO - GEMINI & CHROMADB       ")
     print("=" * 45)
     print("1. Ingest PDF (Process & Embed)")
-    print("2. Ask a Question")
+    print("2. Ask a Question (Chat Session)")
     print("3. Exit")
+
+
+# Runs a multi-turn chat session with memory.
+def chat_loop():
+    chat_history = []
+    print("\n💬 Chat session started! Type 'exit' or 'back' to return to main menu.\n")
+
+    while True:
+        query = input("🔍 Enter your question: ").strip()
+        if not query:
+            print("Question cannot be empty.\n")
+            continue
+
+        if query.lower() in ["exit", "back"]:
+            print("Ending chat session.\n")
+            break
+
+        try:
+            print("\nThinking...")
+            res = answer_question(query, chat_history=chat_history)
+
+            print("\n" + "=" * 45)
+            print("🤖 ANSWER:")
+            print("=" * 45)
+            print(res["answer"])
+
+            print("\n📌 SOURCES RETRIEVED:")
+            for idx, doc in enumerate(res["context"]):
+                page = doc.metadata.get("page", "N/A")
+                print(f"  [{idx+1}] Page {page}: {doc.page_content[:120]}...")
+            print("\n" + "-" * 45 + "\n")
+
+            chat_history.append(HumanMessage(content=query))
+            chat_history.append(AIMessage(content=res["answer"]))
+
+        except Exception as e:
+            print(f"❌ Error during query execution: {e}\n")
 
 
 def main():
@@ -31,27 +70,7 @@ def main():
                 print(f"❌ Error during ingestion: {e}\n")
 
         elif choice == "2":
-            query = input("\n🔍 Enter your question: ").strip()
-            if not query:
-                print("Question cannot be empty.\n")
-                continue
-
-            try:
-                print("\nThinking...")
-                res = answer_question(query)
-
-                print("\n" + "=" * 45)
-                print("🤖 ANSWER:")
-                print("=" * 45)
-                print(res["answer"])
-
-                print("\n📌 SOURCES RETRIEVED:")
-                for idx, doc in enumerate(res["context"]):
-                    page = doc.metadata.get("page", "N/A")
-                    print(f"  [{idx+1}] Page {page}: {doc.page_content[:120]}...")
-                print("\n")
-            except Exception as e:
-                print(f"❌ Error during query execution: {e}\n")
+            chat_loop()
 
         elif choice == "3":
             print("Goodbye!")
