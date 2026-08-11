@@ -35,8 +35,10 @@ def format_docs_with_page_number(docs):
 
 # Retrieves context using chat history and returns an answer with citations.
 def answer_question(
-    user_query: str, chat_history: list, db_path: Path = DB_PATH
+    user_query: str, chat_history: list, db_path: str | Path = DB_PATH
 ) -> dict:
+    db_path = Path(db_path)
+
     if not db_path.exists():
         raise FileNotFoundError(
             f"Vector store not found at '{db_path}'. Please run ingestion first!"

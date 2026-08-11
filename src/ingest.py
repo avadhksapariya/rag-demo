@@ -10,14 +10,19 @@ from src.config import EMBEDDING_MODEL, DB_PATH, PDF_PATH
 
 # Reads a PDF, chunks it, generates embeddings, and saves to ChromaDB.
 def process_pdf_and_ingest(
-    pdf_path: Path = PDF_PATH,
-    db_path: Path = DB_PATH,
+    pdf_path: str | Path = PDF_PATH,
+    db_path: str | Path = DB_PATH,
 ):
+    # Ensure pdf_path and db_path are Path objects
+    pdf_path = Path(pdf_path)
+    db_path = Path(db_path)
+
+    # Now .exists() works reliably on both str and Path inputs
     if not pdf_path.exists():
         raise FileNotFoundError(f"Please place a PDF file at: {pdf_path}")
 
     print(f"📄 Loading PDF: {pdf_path}...")
-    loader = PyMuPDFLoader(pdf_path)
+    loader = PyMuPDFLoader(str(pdf_path))
     documents = loader.load()
 
     print("✂️  Chunking document...")

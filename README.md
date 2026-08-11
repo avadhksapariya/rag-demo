@@ -29,7 +29,9 @@ Question → Retrieval → Gemini LLM → Answer
     `pip install -r requirements.txt`
 
 - Add Gemini API key to `.env` and run:  
-    `py main.py`
+    - If only in *Terminal* : `py main.py`  
+    or  
+    - else *Streamlit Web Interface* : `streamlit run app.py`
 
 The application provides options to ingest the PDF, ask questions, or exit.
 
