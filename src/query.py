@@ -23,19 +23,12 @@ from src.config import (
 )
 
 
-# Formats retrieved chunks with clear page markers for inline citing.
-def format_docs_with_page_number(docs):
-    formatted_chunks = []
-    for doc in docs:
-        page = doc.metadata.get("page", 0) + 1
-        chunk_text = f"--- [Page {page}] ---\n{doc.page_content}"
-        formatted_chunks.append(chunk_text)
-    return "\n\n".join(formatted_chunks)
-
-
 # Retrieves context using chat history and returns an answer with citations.
 def answer_question(
-    user_query: str, chat_history: list, db_path: str | Path = DB_PATH
+    user_query: str,
+    chat_history: list,
+    db_path: str | Path = DB_PATH,
+    selected_file: str | None = None,
 ) -> dict:
     db_path = Path(db_path)
 
@@ -50,8 +43,14 @@ def answer_question(
         persist_directory=str(db_path),
         embedding_function=embeddings,
     )
-    base_retriever = vector_db.as_retriever(search_kwargs={"k": INITIAL_RETRIEVAL_K})
 
+    search_kwargs = {"k": INITIAL_RETRIEVAL_K}
+    if selected_file and selected_file != "All Documents":
+        search_kwargs["filter"] = {"source_file": selected_file}
+
+    base_retriever = vector_db.as_retriever(search_kwargs=search_kwargs)
+
+    # Reranker Stage
     compressor = FlashrankRerank(top_n=FINAL_RETRIEVAL_K)
     rerank_retriever = ContextualCompressionRetriever(
         base_compressor=compressor, base_retriever=base_retriever
@@ -83,7 +82,7 @@ def answer_question(
 
     # Define how EACH document chunk is formatted before insertion into context
     document_prompt = PromptTemplate.from_template(
-        "--- [Page {page}] ---\n{page_content}"
+        "--- [{source_file} | Page {page}] ---\n{page_content}"
     )
 
     # Question-Answering Prompt (uses context and chat history)
@@ -95,8 +94,8 @@ def answer_question(
         "Do not use outside knowledge.\n"
         "Keep the answer concise and clear.\n\n"
         "CITATION INSTRUCTIONS:\n"
-        "1. Whenever you state a fact from the context, include an inline citation with the page number, e.g., [Page X].\n"
-        "2. Only cite pages that are explicitly provided in the context header markers (e.g., --- [Page X] ---).\n\n"
+        "1. Include inline citations like [FileName | Page X] for facts stated in your answer.\n"
+        "2. Use the exact source name and page number shown in the header markers.\n\n"
         "Retrieved context:\n{context}"
     )
     # "you don't know. Do not hallucinate.\n\n"
