@@ -1,19 +1,17 @@
 from pathlib import Path
 
+# Base project root directory
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-# Embedding model used for BOTH ingestion and querying.
-EMBEDDING_MODEL = "gemini-embedding-2"
+# Models
+EMBEDDING_MODEL = "gemini-embedding-2"  # Embedding model BOTH ingestion and querying.
+LLM_MODEL = "gemini-3.6-flash"  # LLM used to generate the final answer.
 
-# LLM used to generate the final answer.
-LLM_MODEL = "gemini-3.6-flash"
-
+# Paths
 DB_PATH = BASE_DIR / "vector_db"
+DATA_DIR = BASE_DIR / "data"
+PDF_PATH = DATA_DIR / "SamudraManthan-ChurningOfTheOcean.pdf"  # single-file fallback
 
-PDF_PATH = BASE_DIR / "data" / "SamudraManthan-ChurningOfTheOcean.pdf"
-
-# Stage 1: Fetch 10 initial candidates from ChromaDB
-INITIAL_RETRIEVAL_K = 10
-
-# Stage 2: Reranker selects top 3 best candidates for Gemini
-FINAL_RETRIEVAL_K = 3
+# Multi-stage Retrieval Settings
+INITIAL_RETRIEVAL_K = 10  # Stage 1: ChromaDB candidate retrieval
+FINAL_RETRIEVAL_K = 3  # Stage 2: Reranked top candidates sent to Gemini
