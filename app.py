@@ -13,12 +13,12 @@ from src.config import DB_PATH
 
 # 1. Page Configuration
 st.set_page_config(
-    page_title="RAG PDF Assistant",
+    page_title="RAG Demo",
     page_icon="📚",
-    layout="wide",
+    layout="centered",
 )
 
-st.title("📚 RAG PDF Assistant (Gemini + ChromaDB)")
+st.title("📚 RAG (Gemini + ChromaDB)")
 
 # 2. Initialize Session State Variables
 if "chat_history" not in st.session_state:
@@ -31,7 +31,10 @@ if "ui_messages" not in st.session_state:
 with st.sidebar:
     st.header("📄 Document Ingestion")
     uploaded_files = st.file_uploader(
-        "Upload one or more PDFs", type=["pdf"], accept_multiple_files=True
+        "Upload one or more PDFs",
+        type=["pdf"],
+        max_upload_size=1,  # upto 1 MB
+        accept_multiple_files=True,
     )
 
     if uploaded_files:

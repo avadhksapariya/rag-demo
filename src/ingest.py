@@ -9,6 +9,33 @@ from langchain_classic.indexes import SQLRecordManager, index
 from src.config import EMBEDDING_MODEL, DB_PATH, PDF_PATH
 
 
+# Scans the data/ folder and ingests all .pdf files found.
+def ingest_all_pdfs_in_directory(
+    data_dir: str | Path = "data", db_path: str | Path = DB_PATH
+):
+    data_path = Path(data_dir)
+    if not data_path.exists():
+        raise FileNotFoundError(f"Directory not found: {data_path}")
+
+    pdf_files = list(data_path.glob("*.pdf"))
+    if not pdf_files:
+        print(f"⚠️ No PDF files found in '{data_path}'.")
+        return
+
+    print(f"📂 Found {len(pdf_files)} PDF(s) in '{data_path}':")
+    for pdf in pdf_files:
+        print(f"  • {pdf.name}")
+    print()
+
+    for pdf_path in pdf_files:
+        try:
+            process_pdf_and_ingest(
+                pdf_path=pdf_path, db_path=db_path, filename_override=pdf_path.name
+            )
+        except Exception as e:
+            print(f"❌ Error ingesting {pdf_path.name}: {e}\n")
+
+
 # Reads a PDF, chunks it, generates embeddings, and saves to ChromaDB.
 def process_pdf_and_ingest(
     pdf_path: str | Path = PDF_PATH,
@@ -34,8 +61,8 @@ def process_pdf_and_ingest(
 
     print("✂️  Chunking document...")
     text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=1000,
-        chunk_overlap=200,
+        chunk_size=1000,  # ~250 tokens
+        chunk_overlap=200,  # 20% duplicate text
     )
     chunks = text_splitter.split_documents(documents)
     print(f"Created {len(chunks)} chunks.")
