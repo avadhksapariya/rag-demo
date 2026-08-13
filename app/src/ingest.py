@@ -6,12 +6,12 @@ from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_chroma import Chroma
 from langchain_classic.indexes import SQLRecordManager, index
 
-from src.config import EMBEDDING_MODEL, DB_PATH, PDF_PATH
+from app.src.config import EMBEDDING_MODEL, DB_PATH, DATA_DIR, PDF_PATH
 
 
 # Scans the data/ folder and ingests all .pdf files found.
 def ingest_all_pdfs_in_directory(
-    data_dir: str | Path = "data", db_path: str | Path = DB_PATH
+    data_dir: str | Path = DATA_DIR, db_path: str | Path = DB_PATH
 ):
     data_path = Path(data_dir)
     if not data_path.exists():

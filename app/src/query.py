@@ -14,7 +14,7 @@ from langchain_classic.chains.combine_documents import create_stuff_documents_ch
 from langchain_classic.retrievers import ContextualCompressionRetriever
 from langchain_community.document_compressors.flashrank_rerank import FlashrankRerank
 
-from src.config import (
+from app.src.config import (
     EMBEDDING_MODEL,
     LLM_MODEL,
     DB_PATH,

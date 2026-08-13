@@ -7,9 +7,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from langchain_core.messages import HumanMessage, AIMessage
-from src.ingest import process_pdf_and_ingest, get_indexed_documents
-from src.query import answer_question
-from src.config import DB_PATH
+from app.src.ingest import process_pdf_and_ingest, get_indexed_documents
+from app.src.query import answer_question
+from app.src.config import DB_PATH
 
 # 1. Page Configuration
 st.set_page_config(
