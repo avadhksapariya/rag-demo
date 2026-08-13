@@ -4,6 +4,7 @@ from langchain_community.document_loaders import PyMuPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_chroma import Chroma
+from langchain_classic.storage import LocalFileStore, create_kv_docstore
 from langchain_classic.indexes import SQLRecordManager, index
 
 from app.src.config import EMBEDDING_MODEL, DB_PATH, DATA_DIR, PDF_PATH
@@ -46,7 +47,7 @@ def process_pdf_and_ingest(
     pdf_path = Path(pdf_path)
     db_path = Path(db_path)
 
-    # Now .exists() works reliably on both str and Path inputs
+    # .exists() works reliably on both str and Path inputs
     if not pdf_path.exists():
         raise FileNotFoundError(f"Please place a PDF file at: {pdf_path}")
 
@@ -56,52 +57,81 @@ def process_pdf_and_ingest(
     loader = PyMuPDFLoader(str(pdf_path))
     documents = loader.load()
 
+    # Normalize metadata
     for doc in documents:
         doc.metadata["source_file"] = display_name
 
-    print("✂️  Chunking document...")
-    text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=1000,  # ~250 tokens
-        chunk_overlap=200,  # 20% duplicate text
+    # Define Splitters
+    parent_splitter = RecursiveCharacterTextSplitter(chunk_size=1500, chunk_overlap=150)
+    child_splitter = RecursiveCharacterTextSplitter(chunk_size=300, chunk_overlap=50)
+
+    # Split into Parent Documents & Child Chunks
+    parent_docs = parent_splitter.split_documents(documents)
+
+    # Generate Parent IDs & Link Child Chunks to Parent IDs
+    child_docs = []
+    parent_id_key = "doc_id"
+    parent_records = {}  # {parent_id: parent_doc}
+
+    for i, p_doc in enumerate(parent_docs):
+        # Create a deterministic parent ID based on file and index
+        parent_id = f"{display_name}_parent_{i}"
+        parent_records[parent_id] = p_doc
+
+        # Split parent into child chunks
+        sub_docs = child_splitter.split_documents([p_doc])
+        for c_doc in sub_docs:
+            c_doc.metadata[parent_id_key] = parent_id
+            c_doc.metadata["source_file"] = display_name
+            child_docs.append(c_doc)
+
+    print(
+        f"✂️ Created {len(parent_docs)} Parent Docs and {len(child_docs)} Child Chunks."
     )
-    chunks = text_splitter.split_documents(documents)
-    print(f"Created {len(chunks)} chunks.")
+
+    # Store Parents in Local Doc Store
+    doc_store_path = db_path / "doc_store"
+    doc_store_path.mkdir(parents=True, exist_ok=True)
+    fs = LocalFileStore(str(doc_store_path))
+    store = create_kv_docstore(fs)
+    store.mset(list(parent_records.items()))
 
     # Initialize Embeddings & Vector Store
     embeddings = GoogleGenerativeAIEmbeddings(model=EMBEDDING_MODEL)
+    chroma_path = db_path / "chroma"
     vector_db = Chroma(
-        persist_directory=str(db_path),
+        collection_name="child_chunks",
+        persist_directory=str(chroma_path),
         embedding_function=embeddings,
     )
 
-    # Initialize Record Manager (Stores metadata & chunk hashes locally)
-    namespace = "chroma/pdf_ingest"
+    # Initialize SQL Record Manager for Child Chunks (Stores metadata & chunk hashes locally)
+    namespace = f"chroma/{display_name}"
     record_manager = SQLRecordManager(
         namespace,
         db_url=f"sqlite:///{db_path}/record_manager.db",
     )
     record_manager.create_schema()
 
-    # Perform Incremental Indexing
-    # handles embedding generation, saving, updating, and cleanup internally.
+    # Incremental Indexing with Batching Safeguards
     print("🧠 Checking for changes and updating vector DB...")
 
     batch_size = 100
-    if len(chunks) > batch_size:
+    if len(child_docs) > batch_size:
         print(
-            f"⚠️ Large document detected ({len(chunks)} chunks). Indexing in batches of {batch_size}..."
+            f"⚠️ Large document detected ({len(child_docs)} child chunks). Indexing in batches of {batch_size}..."
         )
         total_added = 0
         total_skipped = 0
 
-        for i in range(0, len(chunks), batch_size):
-            batch = chunks[i : i + batch_size]
+        for i in range(0, len(child_docs), batch_size):
+            batch = child_docs[i : i + batch_size]
             res = index(
-                docs_source=chunks,
+                docs_source=batch,
                 record_manager=record_manager,
                 vector_store=vector_db,
                 cleanup="incremental",  # Options: 'incremental', 'full', or None
-                source_id_key="source",
+                source_id_key="source_file",
                 key_encoder="sha256",
             )
             total_added += res.get("num_added", 0)
@@ -112,15 +142,15 @@ def process_pdf_and_ingest(
 
     else:
         indexing_result = index(
-            docs_source=chunks,
+            docs_source=child_docs,
             record_manager=record_manager,
             vector_store=vector_db,
-            cleanup="incremental",  # Options: 'incremental', 'full', or None
-            source_id_key="source",
+            cleanup="incremental",
+            source_id_key="source_file",
             key_encoder="sha256",
         )
 
-    print(f"✅ Indexing completefor '{display_name}'! Results: {indexing_result}\n")
+    print(f"✅ Indexing complete for '{display_name}'! Results: {indexing_result}\n")
 
     print(f"✅ Vector database created successfully at '{db_path}'.\n")
 
@@ -130,14 +160,17 @@ def process_pdf_and_ingest(
 # Retrieves a list of all unique file names indexed in ChromaDB.
 def get_indexed_documents(db_path: str | Path = DB_PATH) -> list[str]:
     db_path = Path(db_path)
-    if not db_path.exists():
+    chroma_path = db_path / "chroma"
+    if not chroma_path.exists():
         return []
 
     embeddings = GoogleGenerativeAIEmbeddings(model=EMBEDDING_MODEL)
 
     try:
         vector_db = Chroma(
-            persist_directory=str(db_path), embedding_function=embeddings
+            collection_name="child_chunks",
+            persist_directory=str(chroma_path),
+            embedding_function=embeddings,
         )
         data = vector_db.get(include=["metadatas"])
         metadatas = data.get("metadatas", [])

@@ -1,6 +1,9 @@
 from pathlib import Path
 from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
 from langchain_chroma import Chroma
+from langchain_classic.storage import LocalFileStore, create_kv_docstore
+from langchain_classic.retrievers import ParentDocumentRetriever
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.prompts import (
     ChatPromptTemplate,
     MessagesPlaceholder,
@@ -31,29 +34,42 @@ def answer_question(
     selected_file: str | None = None,
 ) -> dict:
     db_path = Path(db_path)
+    chroma_path = db_path / "chroma"
 
-    if not db_path.exists():
+    if not chroma_path.exists():
         raise FileNotFoundError(
-            f"Vector store not found at '{db_path}'. Please run ingestion first!"
+            f"Vector store not found at '{chroma_path}'. Please run ingestion first!"
         )
 
-    # Load Vector Store & Base Retriever (Stage 1: Fetch 10 candidates)
+    # Load Chroma VectorDB & Local DocStore (Stage 1: Fetch 10 candidates)
     embeddings = GoogleGenerativeAIEmbeddings(model=EMBEDDING_MODEL)
     vector_db = Chroma(
-        persist_directory=str(db_path),
+        collection_name="child_chunks",
+        persist_directory=str(chroma_path),
         embedding_function=embeddings,
     )
+
+    fs = LocalFileStore(str(db_path / "doc_store"))
+    store = create_kv_docstore(fs)
 
     search_kwargs = {"k": INITIAL_RETRIEVAL_K}
     if selected_file and selected_file != "All Documents":
         search_kwargs["filter"] = {"source_file": selected_file}
 
-    base_retriever = vector_db.as_retriever(search_kwargs=search_kwargs)
+    child_splitter = RecursiveCharacterTextSplitter(chunk_size=300, chunk_overlap=50)
 
-    # Reranker Stage
+    # Base Parent Document Retriever
+    base_pdr = ParentDocumentRetriever(
+        vectorstore=vector_db,
+        docstore=store,
+        child_splitter=child_splitter,
+        search_kwargs=search_kwargs,
+    )
+
+    # Two-Stage Reranker over Parent Documents
     compressor = FlashrankRerank(top_n=FINAL_RETRIEVAL_K)
     rerank_retriever = ContextualCompressionRetriever(
-        base_compressor=compressor, base_retriever=base_retriever
+        base_compressor=compressor, base_retriever=base_pdr
     )
 
     llm = ChatGoogleGenerativeAI(model=LLM_MODEL)
