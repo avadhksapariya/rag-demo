@@ -241,6 +241,6 @@ def get_indexed_documents(db_path: str | Path = DB_PATH) -> list[str]:
             if meta and "source_file" in meta
         }
         return sorted(list(files))
-    except Exception:
+    except Exception as e:
         print(f"Error fetching documents: {e}")
         return []
