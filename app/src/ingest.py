@@ -1,13 +1,41 @@
 import time
+import base64
+import pymupdf
 from pathlib import Path
 from langchain_community.document_loaders import PyMuPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
+from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
 from langchain_chroma import Chroma
+from langchain_core.messages import HumanMessage
 from langchain_classic.storage import LocalFileStore, create_kv_docstore
 from langchain_classic.indexes import SQLRecordManager, index
 
-from app.src.config import EMBEDDING_MODEL, DB_PATH, DATA_DIR, PDF_PATH
+from app.src.config import EMBEDDING_MODEL, LLM_MODEL, DB_PATH, DATA_DIR, PDF_PATH
+
+
+# Uses Gemini Vision to summarize an extracted image or diagram.
+def generate_image_summary(image_bytes: bytes) -> str:
+    try:
+        llm = ChatGoogleGenerativeAI(model=LLM_MODEL)
+        encoded_image = base64.b64encode(image_bytes).decode("utf-8")
+
+        message = HumanMessage(
+            content=[
+                {
+                    "type": "text",
+                    "text": "Describe this image, diagram, or table in detail. Extract any relevant text, data, or structural information. If it is just a decorative background, say 'Decorative image'.",
+                },
+                {
+                    "type": "image_url",
+                    "image_url": {"url": f"data:image/jpeg;base64,{encoded_image}"},
+                },
+            ]
+        )
+        response = llm.invoke([message])
+        return response.content
+    except Exception as e:
+        print(f"⚠️ Vision API Error: {e}")
+        return "Image could not be summarized."
 
 
 # Scans the data/ folder and ingests all .pdf files found.
@@ -56,6 +84,39 @@ def process_pdf_and_ingest(
     print(f"📄 Loading PDF: {pdf_path}...")
     loader = PyMuPDFLoader(str(pdf_path))
     documents = loader.load()
+
+    # MULTIMODAL EXTRACTION STAGE
+    print(f"🖼️ Scanning '{display_name}' for images and diagrams...")
+    pdf_document = pymupdf.open(str(pdf_path))
+
+    for i, doc in enumerate(documents):
+        page_num = doc.metadata.get("page", i)
+        page = pdf_document[page_num]
+        images = page.get_images(full=True)
+
+        if images:
+            print(
+                f"   -> Found {len(images)} image(s) on Page {page_num + 1}. Summarizing..."
+            )
+            image_summaries = []
+
+            for img_index, img in enumerate(images):
+                xref = img[0]
+                base_image = pdf_document.extract_image(xref)
+                image_bytes = base_image["image"]
+
+                summary = generate_image_summary(image_bytes)
+
+                if "Decorative image" not in summary:
+                    image_summaries.append(
+                        f"\n\n--- [Image/Diagram Summary] ---\n{summary}"
+                    )
+
+                time.sleep(1)  # Prevent rate limiting on Vision API
+
+            # Append visual summaries directly to the page's text content
+            if image_summaries:
+                doc.page_content += "".join(image_summaries)
 
     # Normalize metadata
     for doc in documents:
@@ -181,4 +242,5 @@ def get_indexed_documents(db_path: str | Path = DB_PATH) -> list[str]:
         }
         return sorted(list(files))
     except Exception:
+        print(f"Error fetching documents: {e}")
         return []
