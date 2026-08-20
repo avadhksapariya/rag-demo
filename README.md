@@ -35,4 +35,11 @@ Question → Retrieval → Gemini LLM → Answer
 
 The application provides options to ingest the PDF, ask questions, or exit.
 
-> **Note:** Run the ingestion step before asking questions.
+### *Notes:*  
+- Run the ingestion step before asking questions.
+
+- when changing embedding models...  
+    - remove old vector database : `Remove-Item -Recurse -Force app\vector_db`
+    - rebuild the vector database by running ingestion.
+
+

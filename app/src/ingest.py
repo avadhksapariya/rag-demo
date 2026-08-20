@@ -10,6 +10,7 @@ from langchain_core.messages import HumanMessage
 from langchain_classic.storage import LocalFileStore, create_kv_docstore
 from langchain_classic.indexes import SQLRecordManager, index
 
+from app.src.embeddings import get_embeddings
 from app.src.config import EMBEDDING_MODEL, LLM_MODEL, DB_PATH, DATA_DIR, PDF_PATH
 
 
@@ -158,7 +159,7 @@ def process_pdf_and_ingest(
     store.mset(list(parent_records.items()))
 
     # Initialize Embeddings & Vector Store
-    embeddings = GoogleGenerativeAIEmbeddings(model=EMBEDDING_MODEL)
+    embeddings = get_embeddings()  # GoogleGenerativeAIEmbeddings(model=EMBEDDING_MODEL)
     chroma_path = db_path / "chroma"
     vector_db = Chroma(
         collection_name="child_chunks",
@@ -225,7 +226,7 @@ def get_indexed_documents(db_path: str | Path = DB_PATH) -> list[str]:
     if not chroma_path.exists():
         return []
 
-    embeddings = GoogleGenerativeAIEmbeddings(model=EMBEDDING_MODEL)
+    embeddings = get_embeddings()
 
     try:
         vector_db = Chroma(

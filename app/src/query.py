@@ -17,6 +17,7 @@ from langchain_classic.chains.combine_documents import create_stuff_documents_ch
 from langchain_classic.retrievers import ContextualCompressionRetriever
 from langchain_community.document_compressors.flashrank_rerank import FlashrankRerank
 
+from app.src.embeddings import get_embeddings
 from app.src.config import (
     EMBEDDING_MODEL,
     LLM_MODEL,
@@ -42,7 +43,7 @@ def answer_question(
         )
 
     # Load Chroma VectorDB & Local DocStore (Stage 1: Fetch 10 candidates)
-    embeddings = GoogleGenerativeAIEmbeddings(model=EMBEDDING_MODEL)
+    embeddings = get_embeddings()
     vector_db = Chroma(
         collection_name="child_chunks",
         persist_directory=str(chroma_path),
