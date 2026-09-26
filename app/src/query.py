@@ -19,8 +19,7 @@ from langchain_community.document_compressors.flashrank_rerank import FlashrankR
 
 from app.src.embeddings import get_embeddings
 from app.src.config import (
-    EMBEDDING_MODEL,
-    LLM_MODEL,
+    get_llm,
     DB_PATH,
     INITIAL_RETRIEVAL_K,
     FINAL_RETRIEVAL_K,
@@ -73,7 +72,7 @@ def answer_question(
         base_compressor=compressor, base_retriever=base_pdr
     )
 
-    llm = ChatGoogleGenerativeAI(model=LLM_MODEL)
+    llm = get_llm()
 
     # History-Aware Retriever Prompt
     # Reformulates follow-up queries into standalone search terms

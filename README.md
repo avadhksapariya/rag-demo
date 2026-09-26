@@ -10,6 +10,7 @@ The project uses **Gemini embeddings**, **ChromaDB** for vector storage and retr
 - LangChain
 - Google Gemini
 - ChromaDB
+- Streamlit
 
 ## How It Works
 
@@ -29,9 +30,9 @@ Question → Retrieval → Gemini LLM → Answer
     `pip install -r requirements.txt`
 
 - Add Gemini API key to `.env` and run:  
-    - If only in *Terminal* : `py main.py`  
+    - If only in *Terminal* : `py -m app.main`  
     or  
-    - else *Streamlit Web Interface* : `streamlit run app.py`
+    - else *Streamlit Web Interface* : `py -m streamlit run app/app_st.py`
 
 The application provides options to ingest the PDF, ask questions, or exit.
 

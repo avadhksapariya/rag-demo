@@ -11,13 +11,13 @@ from langchain_classic.storage import LocalFileStore, create_kv_docstore
 from langchain_classic.indexes import SQLRecordManager, index
 
 from app.src.embeddings import get_embeddings
-from app.src.config import EMBEDDING_MODEL, LLM_MODEL, DB_PATH, DATA_DIR, PDF_PATH
+from app.src.config import DB_PATH, DATA_DIR, PDF_PATH, get_llm
 
 
 # Uses Gemini Vision to summarize an extracted image or diagram.
 def generate_image_summary(image_bytes: bytes) -> str:
     try:
-        llm = ChatGoogleGenerativeAI(model=LLM_MODEL)
+        llm = get_llm()
         encoded_image = base64.b64encode(image_bytes).decode("utf-8")
 
         message = HumanMessage(
@@ -33,6 +33,9 @@ def generate_image_summary(image_bytes: bytes) -> str:
             ]
         )
         response = llm.invoke([message])
+
+        print(f">>> IMG Response : {response.content}")
+
         return response.content
     except Exception as e:
         print(f"⚠️ Vision API Error: {e}")
@@ -87,7 +90,7 @@ def process_pdf_and_ingest(
     documents = loader.load()
 
     # MULTIMODAL EXTRACTION STAGE
-    print(f"🖼️ Scanning '{display_name}' for images and diagrams...")
+    print(f"🖼️  Scanning '{display_name}' for images and diagrams...")
     pdf_document = pymupdf.open(str(pdf_path))
 
     for i, doc in enumerate(documents):
@@ -148,7 +151,7 @@ def process_pdf_and_ingest(
             child_docs.append(c_doc)
 
     print(
-        f"✂️ Created {len(parent_docs)} Parent Docs and {len(child_docs)} Child Chunks."
+        f"✂️  Created {len(parent_docs)} Parent Docs and {len(child_docs)} Child Chunks."
     )
 
     # Store Parents in Local Doc Store
