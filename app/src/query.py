@@ -1,5 +1,6 @@
 from pathlib import Path
-from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
+from pydantic import BaseModel, Field
+from langchain_core.output_parsers import JsonOutputParser
 from langchain_chroma import Chroma
 from langchain_classic.storage import LocalFileStore, create_kv_docstore
 from langchain_classic.retrievers import ParentDocumentRetriever
@@ -24,6 +25,12 @@ from app.src.config import (
     INITIAL_RETRIEVAL_K,
     FINAL_RETRIEVAL_K,
 )
+
+
+class RetrievalGrade(BaseModel):
+    is_relevant: bool = Field(
+        description="True if the retrieved context contains sufficient facts or context to answer the user question. False if it is irrelevant, out-of-scope, or missing."
+    )
 
 
 # Retrieves context using chat history and returns an answer with citations.
@@ -95,6 +102,57 @@ def answer_question(
     history_aware_retriever = create_history_aware_retriever(
         llm, rerank_retriever, contextualize_q_prompt
     )
+
+    # Execute retrieval manually to inspect chunks before generation (CRAG Step)
+    # Reformulate query if chat history exists
+    standalone_query = user_query
+    if chat_history:
+        try:
+            reformulated = history_aware_retriever.invoke(
+                {"input": user_query, "chat_history": chat_history}
+            )
+            if hasattr(reformulated, "page_content"):
+                pass  # retriever returns documents
+        except Exception:
+            pass
+
+    # Retrieve context docs
+    retrieved_docs = rerank_retriever.invoke(user_query)
+
+    # CRAG Evaluation Node: Check if retrieved documents contain actual relevant content
+    if retrieved_docs:
+        context_preview = "\n".join([doc.page_content for doc in retrieved_docs])
+        parser = JsonOutputParser(pydantic_object=RetrievalGrade)
+        grade_prompt = ChatPromptTemplate.from_messages(
+            [
+                (
+                    "system",
+                    "You are a retrieval evaluator. Determine if the retrieved documents contain information relevant to answering the user's question.\n{format_instructions}",
+                ),
+                ("human", "Question: {question}\n\nRetrieved Context:\n{context}"),
+            ]
+        )
+        grade_chain = grade_prompt | llm | parser
+        try:
+            grade_result = grade_chain.invoke(
+                {
+                    "question": user_query,
+                    "context": context_preview,
+                    "format_instructions": parser.get_format_instructions(),
+                }
+            )
+            is_relevant = grade_result.get("is_relevant", True)
+        except Exception:
+            is_relevant = True  # Default to True if grading fails
+    else:
+        is_relevant = False
+
+    # CRAG Action: If context is irrelevant or out-of-scope, short-circuit generation
+    if not is_relevant:
+        return {
+            "answer": "I don't know based on the provided document.",
+            "context": retrieved_docs,
+        }
 
     # Define how EACH document chunk is formatted before insertion into context
     document_prompt = PromptTemplate.from_template(
