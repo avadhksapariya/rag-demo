@@ -2,22 +2,29 @@
 
 A simple **Retrieval-Augmented Generation (RAG)** application that uses a PDF document as the knowledge source.
 
-The project uses **Gemini embeddings**, **ChromaDB** for vector storage and retrieval, and a **Gemini LLM** to generate answers based on the retrieved document context.
+The project uses **Hugging Face** (earlier Gemini) embedding model, **ChromaDB** for vector storage and retrieval, and a **OpenRouter Free LLM** with default fallback of **Gemini LLM** to generate answers based on the retrieved document context.  
+
+The application provides options to ingest the PDF, ask questions, or exit.
 
 ## Tech Stack
 
 - Python
 - LangChain
-- Google Gemini
 - ChromaDB
 - Streamlit
+
+## Embedding & LLMs
+
+- Hugging Face
+- Google Gemini
+- OpenRouter
 
 ## How It Works
 
 ```text
 PDF → Chunking → Embeddings → ChromaDB
                               ↓
-Question → Retrieval → Gemini LLM → Answer
+Question → Retrieval → LLM → Answer
 ```
 
 ## Necessary Commands
@@ -34,7 +41,8 @@ Question → Retrieval → Gemini LLM → Answer
     or  
     - else *Streamlit Web Interface* : `py -m streamlit run app/app_st.py`
 
-The application provides options to ingest the PDF, ask questions, or exit.
+- Automated Evaluation Benchmarks:  
+    - `py -m tests.evaluate_rag`
 
 ### *Notes:*  
 - Run the ingestion step before asking questions.

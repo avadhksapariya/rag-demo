@@ -99,8 +99,6 @@ def evaluate_rag_run():
             }
         )
 
-        print(f">>> : {judge_res}")
-
         results.append(
             {
                 "Question": query,
