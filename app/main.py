@@ -56,30 +56,57 @@ def chat_loop():
             break
 
         try:
-            print("\nThinking...")
-            res = answer_question(
-                query, chat_history=chat_history, selected_file=selected_file
+            print("\nThinking...", end="", flush=True)
+
+            # Request streaming generator
+            stream_gen = answer_question(
+                query,
+                chat_history=chat_history,
+                selected_file=selected_file,
+                stream=True,
             )
 
-            print("\n" + "=" * 45)
-            print("🤖 ANSWER:")
-            print("=" * 45)
-            print(res["answer"])
+            full_answer = []
+            retrieved_sources = []
+            first_token = True
 
-            print("\n📌 SOURCES RETRIEVED:")
-            for idx, doc in enumerate(res.get("context", [])):
-                page = doc.metadata.get("page", 0) + 1
-                source_file = doc.metadata.get("source_file", "Document")
-                print(
-                    f"  [{idx+1}] {source_file} - Page {page}: {doc.page_content[:120]}..."
-                )
-            print("\n" + "-" * 45 + "\n")
+            for chunk_data in stream_gen:
+                if chunk_data["type"] == "token":
+                    if first_token:
+                        # Erase "Thinking..." and print the header
+                        sys.stdout.write("\r" + " " * 20 + "\r")
+                        print("=" * 45)
+                        print("🤖 ANSWER:")
+                        print("=" * 45)
+                        first_token = False
 
+                    token = chunk_data["content"]
+                    sys.stdout.write(token)
+                    sys.stdout.flush()
+                    full_answer.append(token)
+
+                elif chunk_data["type"] == "sources":
+                    retrieved_sources = chunk_data["content"]
+
+            print("\n")
+
+            # Display source citations
+            if retrieved_sources:
+                print("📌 SOURCES RETRIEVED:")
+                for idx, doc in enumerate(retrieved_sources):
+                    page = doc.metadata.get("page", 0) + 1
+                    source_file = doc.metadata.get("source_file", "Document")
+                    snippet = doc.page_content.strip().replace("\n", " ")[:120]
+                    print(f"  [{idx+1}] {source_file} - Page {page}: {snippet}...")
+                print("\n" + "-" * 45 + "\n")
+
+            # Update conversation memory
+            final_text = "".join(full_answer)
             chat_history.append(HumanMessage(content=query))
-            chat_history.append(AIMessage(content=res["answer"]))
+            chat_history.append(AIMessage(content=final_text))
 
         except Exception as e:
-            print(f"❌ Error during query execution: {e}\n")
+            print(f"\n❌ Error during query execution: {e}\n")
 
 
 def main():

@@ -96,50 +96,59 @@ if user_query := st.chat_input("Ask a question about your uploaded document...")
     st.chat_message("user").markdown(user_query)
     st.session_state.ui_messages.append({"role": "user", "content": user_query})
 
-    # Generate Response
     with st.chat_message("assistant"):
-        with st.spinner("Thinking..."):
-            try:
-                # Call backend RAG pipeline with history
-                response = answer_question(
-                    user_query=user_query,
-                    chat_history=st.session_state.chat_history,
-                    db_path=DB_PATH,
-                    selected_file=selected_file,
-                )
+        try:
+            stream_gen = answer_question(
+                user_query=user_query,
+                chat_history=st.session_state.chat_history,
+                db_path=DB_PATH,
+                selected_file=selected_file,
+                stream=True,
+            )
 
-                answer_text = response["answer"]
-                st.markdown(answer_text)
+            # Container list for sources captured during the stream
+            retrieved_sources = []
 
-                # Format retrieved sources
-                sources_data = []
-                for doc in response.get("context", []):
-                    page = doc.metadata.get("page", 0) + 1
-                    file_name = doc.metadata.get("source_file", "Document")
-                    sources_data.append(
-                        {
-                            "file": file_name,
-                            "page": page,
-                            "text": doc.page_content[:200] + "...",
-                        }
-                    )
+            def token_generator():
+                for chunk in stream_gen:
+                    if chunk["type"] == "token":
+                        yield chunk["content"]
+                    elif chunk["type"] == "sources":
+                        # In-place mutation: works across all scopes without nonlocal/global
+                        retrieved_sources.extend(chunk["content"])
 
-                if sources_data:
-                    with st.expander("📌 Retrieved Sources & Citations"):
-                        for idx, src in enumerate(sources_data):
-                            st.markdown(f"**[{idx+1}] Page {src['page']}**")
-                            st.caption(src["text"])
+            # Native Streamlit typewriter streaming
+            answer_text = st.write_stream(token_generator())
 
-                st.session_state.ui_messages.append(
+            # Format retrieved sources
+            sources_data = []
+            for doc in retrieved_sources:
+                page = doc.metadata.get("page", 0) + 1
+                file_name = doc.metadata.get("source_file", "Document")
+                sources_data.append(
                     {
-                        "role": "assistant",
-                        "content": answer_text,
-                        "sources": sources_data,
+                        "file": file_name,
+                        "page": page,
+                        "text": doc.page_content[:200] + "...",
                     }
                 )
 
-                st.session_state.chat_history.append(HumanMessage(content=user_query))
-                st.session_state.chat_history.append(AIMessage(content=answer_text))
+            if sources_data:
+                with st.expander("📌 Retrieved Sources & Citations"):
+                    for idx, src in enumerate(sources_data):
+                        st.markdown(f"**[{idx+1}] {src['file']} - Page {src['page']}**")
+                        st.caption(src["text"])
 
-            except Exception as e:
-                st.error(f"❌ Error generating response: {e}")
+            st.session_state.ui_messages.append(
+                {
+                    "role": "assistant",
+                    "content": answer_text,
+                    "sources": sources_data,
+                }
+            )
+
+            st.session_state.chat_history.append(HumanMessage(content=user_query))
+            st.session_state.chat_history.append(AIMessage(content=answer_text))
+
+        except Exception as e:
+            st.error(f"❌ Error generating response: {e}")

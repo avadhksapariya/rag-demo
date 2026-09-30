@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Union, Generator
 from pydantic import BaseModel, Field
 from langchain_core.output_parsers import JsonOutputParser
 from langchain_chroma import Chroma
@@ -34,12 +35,16 @@ class RetrievalGrade(BaseModel):
 
 
 # Retrieves context using chat history and returns an answer with citations.
+# Handles retrieval, CRAG evaluation, and answer generation.
+# If stream=True: Yields {'type': 'token', 'content': '...'} and {'type': 'sources', 'content': [...]}.
+# If stream=False: Returns {'answer': '...', 'context': [...]}.
 def answer_question(
     user_query: str,
     chat_history: list,
     db_path: str | Path = DB_PATH,
     selected_file: str | None = None,
-) -> dict:
+    stream: bool = False,
+) -> Union[dict, Generator[dict, None, None]]:
     db_path = Path(db_path)
     chroma_path = db_path / "chroma"
 
@@ -48,7 +53,7 @@ def answer_question(
             f"Vector store not found at '{chroma_path}'. Please run ingestion first!"
         )
 
-    # Load Chroma VectorDB & Local DocStore (Stage 1: Fetch 10 candidates)
+    # 1. Setup Retriever & Reranker
     embeddings = get_embeddings()
     vector_db = Chroma(
         collection_name="child_chunks",
@@ -81,45 +86,34 @@ def answer_question(
 
     llm = get_llm()
 
-    # History-Aware Retriever Prompt
-    # Reformulates follow-up queries into standalone search terms
-    contextualize_q_system_prompt = (
-        "Given a chat history and the latest user question "
-        "which might reference context in the chat history, "
-        "formulate a standalone question which can be understood "
-        "without the chat history. Do NOT answer the question, "
-        "just reformulate it if needed and otherwise return it as is."
-    )
-
-    contextualize_q_prompt = ChatPromptTemplate.from_messages(
-        [
-            ("system", contextualize_q_system_prompt),
-            MessagesPlaceholder("chat_history"),
-            ("human", "{input}"),
-        ]
-    )
-
-    history_aware_retriever = create_history_aware_retriever(
-        llm, rerank_retriever, contextualize_q_prompt
-    )
-
-    # Execute retrieval manually to inspect chunks before generation (CRAG Step)
-    # Reformulate query if chat history exists
+    # 2. History-Aware Standalone Query Reformulation
     standalone_query = user_query
     if chat_history:
+        contextualize_q_prompt = ChatPromptTemplate.from_messages(
+            [
+                (
+                    "system",
+                    "Given a chat history and the latest user question which might reference context in the chat history, "
+                    "formulate a standalone question which can be understood without the chat history. Do NOT answer the question, "
+                    "just reformulate it if needed and otherwise return it as is.",
+                ),
+                MessagesPlaceholder("chat_history"),
+                ("human", "{input}"),
+            ]
+        )
+        history_chain = contextualize_q_prompt | llm
         try:
-            reformulated = history_aware_retriever.invoke(
+            res = history_chain.invoke(
                 {"input": user_query, "chat_history": chat_history}
             )
-            if hasattr(reformulated, "page_content"):
-                pass  # retriever returns documents
+            standalone_query = res.content
         except Exception:
-            pass
+            standalone_query = user_query
 
-    # Retrieve context docs
-    retrieved_docs = rerank_retriever.invoke(user_query)
+    # 3. Retrieve Documents
+    retrieved_docs = rerank_retriever.invoke(standalone_query)
 
-    # CRAG Evaluation Node: Check if retrieved documents contain actual relevant content
+    # 4. Corrective RAG (CRAG) Check
     if retrieved_docs:
         context_preview = "\n".join([doc.page_content for doc in retrieved_docs])
         parser = JsonOutputParser(pydantic_object=RetrievalGrade)
@@ -143,23 +137,23 @@ def answer_question(
             )
             is_relevant = grade_result.get("is_relevant", True)
         except Exception:
-            is_relevant = True  # Default to True if grading fails
+            is_relevant = True
     else:
         is_relevant = False
 
-    # CRAG Action: If context is irrelevant or out-of-scope, short-circuit generation
+    # Short-circuit if out of scope / irrelevant
     if not is_relevant:
-        return {
-            "answer": "I don't know based on the provided document.",
-            "context": retrieved_docs,
-        }
+        refusal_msg = "I don't know based on the provided document."
+        if stream:
 
-    # Define how EACH document chunk is formatted before insertion into context
-    document_prompt = PromptTemplate.from_template(
-        "--- [{source_file} | Page {page}] ---\n{page_content}"
-    )
+            def _refusal_gen():
+                yield {"type": "token", "content": refusal_msg}
+                yield {"type": "sources", "content": retrieved_docs}
 
-    # Question-Answering Prompt (uses context and chat history)
+            return _refusal_gen()
+        return {"answer": refusal_msg, "context": retrieved_docs}
+
+    # 5. Build QA Chain
     system_prompt = (
         "You are a helpful assistant for question-answering tasks.\n"
         "Use the following pieces of retrieved context to answer the question.\n"
@@ -182,13 +176,38 @@ def answer_question(
         ]
     )
 
-    # Combine into final chain
-    question_answer_chain = create_stuff_documents_chain(
-        llm,
-        prompt=qa_prompt,
-        document_prompt=document_prompt,
-        document_variable_name="context",
-    )
-    rag_chain = create_retrieval_chain(history_aware_retriever, question_answer_chain)
+    formatted_chunks = [
+        f"--- [{doc.metadata.get('source_file', 'Unknown')} | Page {doc.metadata.get('page', 0)}] ---\n{doc.page_content}"
+        for doc in retrieved_docs
+    ]
+    context_str = "\n\n".join(formatted_chunks)
+    qa_chain = qa_prompt | llm
 
-    return rag_chain.invoke({"input": user_query, "chat_history": chat_history})
+    # 6. Return Streaming Generator OR Direct Dictionary
+    if stream:
+
+        def _stream_gen():
+            for chunk in qa_chain.stream(
+                {
+                    "context": context_str,
+                    "chat_history": chat_history,
+                    "input": user_query,
+                }
+            ):
+                token_text = chunk.content if hasattr(chunk, "content") else str(chunk)
+                if token_text:
+                    yield {"type": "token", "content": token_text}
+            yield {"type": "sources", "content": retrieved_docs}
+
+        return _stream_gen()
+
+    # Default synchronous invocation (Evaluation scripts, benchmarks, tests)
+    response = qa_chain.invoke(
+        {
+            "context": context_str,
+            "chat_history": chat_history,
+            "input": user_query,
+        }
+    )
+    final_text = response.content if hasattr(response, "content") else str(response)
+    return {"answer": final_text, "context": retrieved_docs}
