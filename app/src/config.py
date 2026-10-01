@@ -27,8 +27,8 @@ DATA_DIR = APP_DIR / "data"
 PDF_PATH = DATA_DIR / "SamudraManthan-ChurningOfTheOcean.pdf"  # single-file fallback
 
 # Multi-stage Retrieval Settings
-INITIAL_RETRIEVAL_K = 10  # Stage 1: ChromaDB candidate retrieval
-FINAL_RETRIEVAL_K = 3  # Stage 2: Reranked top candidates sent to LLM
+INITIAL_RETRIEVAL_K = 15  # Stage 1: ChromaDB candidate retrieval
+FINAL_RETRIEVAL_K = 5  # Stage 2: Reranked top candidates sent to LLM
 
 
 # PROVIDER CONFIGURATION

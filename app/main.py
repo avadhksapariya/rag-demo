@@ -56,7 +56,7 @@ def chat_loop():
             break
 
         try:
-            print("\nThinking...", end="", flush=True)
+            print("\nThinking...\n", end="", flush=True)
 
             # Request streaming generator
             stream_gen = answer_question(

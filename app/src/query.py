@@ -1,3 +1,5 @@
+import re
+
 from pathlib import Path
 from typing import Union, Generator
 from pydantic import BaseModel, Field
@@ -9,13 +11,7 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.prompts import (
     ChatPromptTemplate,
     MessagesPlaceholder,
-    PromptTemplate,
 )
-from langchain_classic.chains.history_aware_retriever import (
-    create_history_aware_retriever,
-)
-from langchain_classic.chains.retrieval import create_retrieval_chain
-from langchain_classic.chains.combine_documents import create_stuff_documents_chain
 from langchain_classic.retrievers import ContextualCompressionRetriever
 from langchain_community.document_compressors.flashrank_rerank import FlashrankRerank
 
@@ -27,11 +23,71 @@ from app.src.config import (
     FINAL_RETRIEVAL_K,
 )
 
+pleasantry_words = {
+    "thanks",
+    "thank",
+    "you",
+    "perfect",
+    "great",
+    "ok",
+    "okay",
+    "got",
+    "it",
+    "cool",
+    "understood",
+    "awesome",
+    "bye",
+    "goodbye",
+    "done",
+    "alright",
+    "clear",
+    "helpful",
+    "appreciated",
+}
+
 
 class RetrievalGrade(BaseModel):
     is_relevant: bool = Field(
         description="True if the retrieved context contains sufficient facts or context to answer the user question. False if it is irrelevant, out-of-scope, or missing."
     )
+
+
+class UserIntent(BaseModel):
+    intent: str = Field(
+        description="Classify as 'chitchat' if the message is a greeting, reaction, compliment, pleasantry, acknowledgment (e.g., 'Amazing', 'Thanks', 'Cool', 'Haha wow', 'Understood'), or casual banter. Classify as 'rag_query' if the user is asking a factual question, seeking information, or following up on document content."
+    )
+    direct_response: str = Field(
+        default="",
+        description="If intent is 'chitchat', provide a short, warm, natural conversational reply (e.g. 'Glad you found it interesting! Let me know if you need anything else.'). If 'rag_query', leave this empty.",
+    )
+
+
+# Classifies user input dynamically using the LLM before any vector retrieval.
+def _classify_intent(user_query: str, llm) -> UserIntent:
+    parser = JsonOutputParser(pydantic_object=UserIntent)
+    intent_prompt = ChatPromptTemplate.from_messages(
+        [
+            (
+                "system",
+                "You are an input intent classifier for an intelligent assistant.\n"
+                "Determine whether the user is casually interacting/acknowledging or asking a genuine question.\n"
+                "{format_instructions}",
+            ),
+            ("human", "{input}"),
+        ]
+    )
+    chain = intent_prompt | llm | parser
+    try:
+        res = chain.invoke(
+            {
+                "input": user_query,
+                "format_instructions": parser.get_format_instructions(),
+            }
+        )
+        return UserIntent(**res)
+    except Exception:
+        # Default to standard RAG pipeline if parsing fails
+        return UserIntent(intent="rag_query", direct_response="")
 
 
 # Retrieves context using chat history and returns an answer with citations.
@@ -45,6 +101,32 @@ def answer_question(
     selected_file: str | None = None,
     stream: bool = False,
 ) -> Union[dict, Generator[dict, None, None]]:
+
+    llm = get_llm()
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Dynamic Intent Classification flow
+    # ─────────────────────────────────────────────────────────────────────────
+    user_intent = _classify_intent(user_query, llm)
+
+    if user_intent.intent == "chitchat":
+        reply = (
+            user_intent.direct_response
+            or "Glad that helped! Let me know if you have any more questions."
+        )
+        if stream:
+
+            def _chitchat_stream():
+                yield {"type": "token", "content": reply}
+                yield {"type": "sources", "content": []}
+
+            return _chitchat_stream()
+        return {"answer": reply, "context": []}
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Regular flow
+    # ─────────────────────────────────────────────────────────────────────────
+
     db_path = Path(db_path)
     chroma_path = db_path / "chroma"
 
@@ -84,8 +166,6 @@ def answer_question(
         base_compressor=compressor, base_retriever=base_pdr
     )
 
-    llm = get_llm()
-
     # 2. History-Aware Standalone Query Reformulation
     standalone_query = user_query
     if chat_history:
@@ -93,9 +173,10 @@ def answer_question(
             [
                 (
                     "system",
-                    "Given a chat history and the latest user question which might reference context in the chat history, "
-                    "formulate a standalone question which can be understood without the chat history. Do NOT answer the question, "
-                    "just reformulate it if needed and otherwise return it as is.",
+                    "You are a query reformulator. Given a chat history and the latest user message "
+                    "(which may contain conversational corrections like 'no not that' or follow-up details), "
+                    "rephrase it into a complete, standalone search query that preserves all primary entities, "
+                    "actions, and historical context. Do NOT answer the question. Return ONLY the reformulated query.",
                 ),
                 MessagesPlaceholder("chat_history"),
                 ("human", "{input}"),
@@ -121,7 +202,12 @@ def answer_question(
             [
                 (
                     "system",
-                    "You are a retrieval evaluator. Determine if the retrieved documents contain information relevant to answering the user's question.\n{format_instructions}",
+                    "You are a retrieval evaluator. Check if the retrieved documents share the same topic "
+                    "or discuss the entities/actions asked about in the question.\n"
+                    "Mark 'is_relevant: true' if the context contains relevant or related facts, even if the user "
+                    "must infer the final count or answer.\n"
+                    "Mark 'is_relevant: false' ONLY if the retrieved documents are completely unrelated.\n"
+                    "{format_instructions}",
                 ),
                 ("human", "Question: {question}\n\nRetrieved Context:\n{context}"),
             ]
