@@ -22,6 +22,7 @@ from app.src.config import (
     INITIAL_RETRIEVAL_K,
     FINAL_RETRIEVAL_K,
 )
+from app.src.web_search import search_web_fallback
 
 pleasantry_words = {
     "thanks",
@@ -173,10 +174,13 @@ def answer_question(
             [
                 (
                     "system",
-                    "You are a query reformulator. Given a chat history and the latest user message "
-                    "(which may contain conversational corrections like 'no not that' or follow-up details), "
-                    "rephrase it into a complete, standalone search query that preserves all primary entities, "
-                    "actions, and historical context. Do NOT answer the question. Return ONLY the reformulated query.",
+                    "You are a search query optimizer. Given a conversation history and a follow-up user message, "
+                    "rephrase it into a concise, standalone keyword search query (3 to 8 words maximum).\n"
+                    "CRITICAL RULES:\n"
+                    "- DO NOT answer the question.\n"
+                    "- DO NOT explain or add commentary.\n"
+                    "- DO NOT use markdown bolding (**), quotes, or punctuation.\n"
+                    "- Output ONLY the search query string.",
                 ),
                 MessagesPlaceholder("chat_history"),
                 ("human", "{input}"),
@@ -194,7 +198,7 @@ def answer_question(
     # 3. Retrieve Documents
     retrieved_docs = rerank_retriever.invoke(standalone_query)
 
-    # 4. Corrective RAG (CRAG) Check
+    # 4. Corrective RAG (CRAG) Check: Evaluate relevance of retrieved context
     if retrieved_docs:
         context_preview = "\n".join([doc.page_content for doc in retrieved_docs])
         parser = JsonOutputParser(pydantic_object=RetrievalGrade)
@@ -202,11 +206,12 @@ def answer_question(
             [
                 (
                     "system",
-                    "You are a retrieval evaluator. Check if the retrieved documents share the same topic "
-                    "or discuss the entities/actions asked about in the question.\n"
-                    "Mark 'is_relevant: true' if the context contains relevant or related facts, even if the user "
-                    "must infer the final count or answer.\n"
-                    "Mark 'is_relevant: false' ONLY if the retrieved documents are completely unrelated.\n"
+                    "You are a strict factual retrieval evaluator.\n"
+                    "Determine whether the retrieved context contains the actual, specific information "
+                    "needed to answer the user's question.\n"
+                    "- Mark 'is_relevant: false' if the context merely mentions related characters or themes "
+                    "but DOES NOT actually state the answer to the question.\n"
+                    "- Mark 'is_relevant: true' ONLY if the text directly provides the facts required to answer the question.\n"
                     "{format_instructions}",
                 ),
                 ("human", "Question: {question}\n\nRetrieved Context:\n{context}"),
@@ -216,7 +221,7 @@ def answer_question(
         try:
             grade_result = grade_chain.invoke(
                 {
-                    "question": user_query,
+                    "question": standalone_query,
                     "context": context_preview,
                     "format_instructions": parser.get_format_instructions(),
                 }
@@ -227,32 +232,66 @@ def answer_question(
     else:
         is_relevant = False
 
-    # Short-circuit if out of scope / irrelevant
+    # 5. Corrective Action: Fallback to Web Search if Documents are Irrelevant
+    is_web_fallback = False
+    active_docs = retrieved_docs
+
     if not is_relevant:
-        refusal_msg = "I don't know based on the provided document."
-        if stream:
+        clean_search_query = (
+            standalone_query.replace("**", "").replace('"', "").strip().split("\n")[0]
+        )
 
-            def _refusal_gen():
-                yield {"type": "token", "content": refusal_msg}
-                yield {"type": "sources", "content": retrieved_docs}
+        web_docs = search_web_fallback(clean_search_query, max_results=3)
+        if web_docs:
+            active_docs = web_docs
+            is_web_fallback = True
+        else:
+            refusal_msg = "I don't know based on the provided document, and web search returned no relevant results"
+            if stream:
 
-            return _refusal_gen()
-        return {"answer": refusal_msg, "context": retrieved_docs}
+                def _refusal_gen():
+                    yield {"type": "token", "content": refusal_msg}
+                    yield {"type": "sources", "content": []}
 
-    # 5. Build QA Chain
-    system_prompt = (
-        "You are a helpful assistant for question-answering tasks.\n"
-        "Use the following pieces of retrieved context to answer the question.\n"
-        "If you don't know the answer or if it is not present in the context, say "
-        '"I don\'t know based on the provided document."\n'
-        "Do not use outside knowledge.\n"
-        "Keep the answer concise and clear.\n\n"
-        "CITATION INSTRUCTIONS:\n"
-        "1. Include inline citations like [FileName | Page X] for facts stated in your answer.\n"
-        "2. Use the exact source name and page number shown in the header markers.\n\n"
-        "Retrieved context:\n{context}"
-    )
-    # "you don't know. Do not hallucinate.\n\n"
+                return _refusal_gen()
+            return {"answer": refusal_msg, "context": []}
+
+    # 6. Build QA Chain: Choose prompt based on Document vs Web search
+    if is_web_fallback:
+        prefix_note = "*(Note: Information was not found in your indexed documents; retrieved via web search fallback)*\n\n"
+        system_prompt = (
+            "You are a helpful assistant.\n"
+            "The requested information was not found in the user's uploaded documents, "
+            "so you must answer based on the following web search results.\n"
+            "Keep the answer concise, accurate, and cite web sources when possible.\n\n"
+            "Web search context:\n{context}"
+        )
+        formatted_chunks = [
+            f"--- [{doc.metadata.get('source_file', 'Web')} | Link: {doc.metadata.get('url', '')}] ---\n{doc.page_content}"
+            for doc in active_docs
+        ]
+    else:
+        prefix_note = ""
+        system_prompt = (
+            "You are a helpful assistant for question-answering tasks.\n"
+            "Use ONLY the following pieces of retrieved context to answer the question.\n"
+            "Do NOT infer or extrapolate facts not directly stated in the text.\n"
+            "If the context does not explicitly state the answer, say:\n"
+            '"I don\'t know based on the provided document."\n'
+            "Do not use outside knowledge.\n"
+            "Keep the answer concise and clear.\n\n"
+            "CITATION INSTRUCTIONS:\n"
+            "1. Include inline citations like [FileName | Page X] for facts stated in your answer.\n"
+            "2. Use the exact source name and page number shown in the header markers.\n\n"
+            "Retrieved context:\n{context}"
+        )
+        # "you don't know. Do not hallucinate.\n\n"
+        formatted_chunks = [
+            f"--- [{doc.metadata.get('source_file', 'Unknown')} | Page {doc.metadata.get('page', 0)}] ---\n{doc.page_content}"
+            for doc in active_docs
+        ]
+
+    context_str = "\n\n".join(formatted_chunks)
 
     qa_prompt = ChatPromptTemplate.from_messages(
         [
@@ -262,17 +301,14 @@ def answer_question(
         ]
     )
 
-    formatted_chunks = [
-        f"--- [{doc.metadata.get('source_file', 'Unknown')} | Page {doc.metadata.get('page', 0)}] ---\n{doc.page_content}"
-        for doc in retrieved_docs
-    ]
-    context_str = "\n\n".join(formatted_chunks)
     qa_chain = qa_prompt | llm
 
-    # 6. Return Streaming Generator OR Direct Dictionary
+    # 7. Return Streaming Generator OR Direct Dictionary
     if stream:
 
         def _stream_gen():
+            if prefix_note:
+                yield {"type": "token", "content": prefix_note}
             for chunk in qa_chain.stream(
                 {
                     "context": context_str,
@@ -283,7 +319,7 @@ def answer_question(
                 token_text = chunk.content if hasattr(chunk, "content") else str(chunk)
                 if token_text:
                     yield {"type": "token", "content": token_text}
-            yield {"type": "sources", "content": retrieved_docs}
+            yield {"type": "sources", "content": active_docs}
 
         return _stream_gen()
 
@@ -295,5 +331,7 @@ def answer_question(
             "input": user_query,
         }
     )
-    final_text = response.content if hasattr(response, "content") else str(response)
-    return {"answer": final_text, "context": retrieved_docs}
+    final_text = prefix_note + (
+        response.content if hasattr(response, "content") else str(response)
+    )
+    return {"answer": final_text, "context": active_docs}
