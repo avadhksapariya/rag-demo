@@ -1,5 +1,3 @@
-import re
-
 from pathlib import Path
 from typing import Union, Generator
 from pydantic import BaseModel, Field
@@ -23,6 +21,7 @@ from app.src.config import (
     FINAL_RETRIEVAL_K,
 )
 from app.src.web_search import search_web_fallback
+from app.src.hybrid import ParentBM25Retriever, reciprocal_rank_fusion
 
 pleasantry_words = {
     "thanks",
@@ -154,18 +153,22 @@ def answer_question(
     child_splitter = RecursiveCharacterTextSplitter(chunk_size=300, chunk_overlap=50)
 
     # Base Parent Document Retriever
-    base_pdr = ParentDocumentRetriever(
+    dense_pdr = ParentDocumentRetriever(
         vectorstore=vector_db,
         docstore=store,
         child_splitter=child_splitter,
         search_kwargs=search_kwargs,
     )
 
-    # Two-Stage Reranker over Parent Documents
-    compressor = FlashrankRerank(top_n=FINAL_RETRIEVAL_K)
-    rerank_retriever = ContextualCompressionRetriever(
-        base_compressor=compressor, base_retriever=base_pdr
+    # Sparse BM25 PDR
+    sparse_pdr = ParentBM25Retriever(
+        vector_db=vector_db,
+        store=store,
+        k=INITIAL_RETRIEVAL_K,
     )
+
+    # Standalone Cross-Encoder Reranker
+    compressor = FlashrankRerank(top_n=FINAL_RETRIEVAL_K)
 
     # 2. History-Aware Standalone Query Reformulation
     standalone_query = user_query
@@ -195,8 +198,21 @@ def answer_question(
         except Exception:
             standalone_query = user_query
 
-    # 3. Retrieve Documents
-    retrieved_docs = rerank_retriever.invoke(standalone_query)
+    # 3. Retrieve Documents via Hybrid Search (Dense + Sparse) & Rerank
+    dense_docs = dense_pdr.invoke(standalone_query)
+    sparse_docs = sparse_pdr.invoke(standalone_query, selected_file=selected_file)
+
+    hybrid_candidates = reciprocal_rank_fusion(
+        dense_docs=dense_docs, sparse_docs=sparse_docs, top_n=INITIAL_RETRIEVAL_K
+    )
+
+    # Compress / Rerank top candidates using FlashRank
+    if hybrid_candidates:
+        retrieved_docs = compressor.compress_documents(
+            documents=hybrid_candidates, query=standalone_query
+        )
+    else:
+        retrieved_docs = []
 
     # 4. Corrective RAG (CRAG) Check: Evaluate relevance of retrieved context
     if retrieved_docs:
