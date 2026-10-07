@@ -34,8 +34,6 @@ def generate_image_summary(image_bytes: bytes) -> str:
         )
         response = llm.invoke([message])
 
-        print(f">>> IMG Response : {response.content}")
-
         return response.content
     except Exception as e:
         print(f"⚠️ Vision API Error: {e}")
