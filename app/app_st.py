@@ -10,6 +10,7 @@ from langchain_core.messages import HumanMessage, AIMessage
 from app.src.ingest import process_pdf_and_ingest, get_indexed_documents
 from app.src.query import answer_question
 from app.src.config import DB_PATH
+from app.utils.typing_dots import TYPING_DOTS_LOADER_HTML
 
 # 1. Page Configuration
 st.set_page_config(
@@ -98,6 +99,9 @@ if user_query := st.chat_input("Ask a question about your uploaded document...")
 
     with st.chat_message("assistant"):
         try:
+            placeholder = st.empty()
+            placeholder.markdown(TYPING_DOTS_LOADER_HTML, unsafe_allow_html=True)
+
             stream_gen = answer_question(
                 user_query=user_query,
                 chat_history=st.session_state.chat_history,
@@ -110,10 +114,17 @@ if user_query := st.chat_input("Ask a question about your uploaded document...")
             retrieved_sources = []
 
             def token_generator():
+                cleared_loader = False
+
                 for chunk in stream_gen:
-                    if chunk["type"] == "token":
+                    chunk_type = chunk.get("type")
+                    if chunk_type == "token":
+                        if not cleared_loader:
+                            placeholder.empty()
+                            cleared_loader = True
                         yield chunk["content"]
-                    elif chunk["type"] == "sources":
+
+                    elif chunk_type == "sources":
                         # In-place mutation: works across all scopes without nonlocal/global
                         retrieved_sources.extend(chunk["content"])
 
