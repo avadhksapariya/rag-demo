@@ -13,6 +13,7 @@ from langchain_core.prompts import (
 from langchain_classic.retrievers import ContextualCompressionRetriever
 from langchain_community.document_compressors.flashrank_rerank import FlashrankRerank
 
+from app.src.ingest import get_indexed_documents
 from app.src.embeddings import get_embeddings
 from app.src.config import (
     get_llm,
@@ -62,6 +63,13 @@ class UserIntent(BaseModel):
     )
 
 
+class DocumentFilterDecision(BaseModel):
+    target_file: str | None = Field(
+        default=None,
+        description="The exact filename from the candidate list that the user specifically mentions or refers to. If the user does not specify a particular file, return None.",
+    )
+
+
 # Classifies user input dynamically using the LLM before any vector retrieval.
 def _classify_intent(user_query: str, llm) -> UserIntent:
     parser = JsonOutputParser(pydantic_object=UserIntent)
@@ -88,6 +96,46 @@ def _classify_intent(user_query: str, llm) -> UserIntent:
     except Exception:
         # Default to standard RAG pipeline if parsing fails
         return UserIntent(intent="rag_query", direct_response="")
+
+
+# Detects if the user query references a specific document name or theme
+# and maps it to an indexed file in ChromaDB.
+def detect_document_filter(query: str, available_files: list[str], llm) -> str | None:
+    if not available_files:
+        return None
+
+    if len(available_files) == 1:
+        return available_files[0]
+
+    parser = JsonOutputParser(pydantic_object=DocumentFilterDecision)
+    prompt = ChatPromptTemplate.from_messages(
+        [
+            (
+                "system",
+                "You are a document routing assistant.\n"
+                "Analyze the user question and determine if they are asking about or referencing a specific document from this list:\n"
+                "{file_list}\n\n"
+                "RULES:\n"
+                "1. If the user mentions a document title, topic, or file name matching an item in the list, set 'target_file' to that exact file name.\n"
+                "2. If the user does not specify or asks across all knowledge, set 'target_file' to null.\n"
+                "{format_instructions}",
+            ),
+            ("human", "{question}"),
+        ]
+    )
+
+    chain = prompt | llm | parser
+    try:
+        res = chain.invoke(
+            {
+                "question": query,
+                "file_list": "\n".join([f"- {f}" for f in available_files]),
+                "format_instructions": parser.get_format_instructions(),
+            }
+        )
+        return res.get("target_file")
+    except Exception:
+        return None
 
 
 # Retrieves context using chat history and returns an answer with citations.
@@ -135,7 +183,44 @@ def answer_question(
             f"Vector store not found at '{chroma_path}'. Please run ingestion first!"
         )
 
-    # 1. Setup Retriever & Reranker
+    # 1. History-Aware Standalone Query Reformulation
+    standalone_query = user_query
+    if chat_history:
+        contextualize_q_prompt = ChatPromptTemplate.from_messages(
+            [
+                (
+                    "system",
+                    "You are a search query optimizer. Given a conversation history and a follow-up user message, "
+                    "rephrase it into a concise, standalone keyword search query (3 to 8 words maximum).\n"
+                    "CRITICAL RULES:\n"
+                    "- DO NOT answer the question.\n"
+                    "- DO NOT explain or add commentary.\n"
+                    "- DO NOT use markdown bolding (**), quotes, or punctuation.\n"
+                    "- Output ONLY the search query string.",
+                ),
+                MessagesPlaceholder("chat_history"),
+                ("human", "{input}"),
+            ]
+        )
+        history_chain = contextualize_q_prompt | llm
+        try:
+            res = history_chain.invoke(
+                {"input": user_query, "chat_history": chat_history}
+            )
+            standalone_query = res.content
+        except Exception:
+            standalone_query = user_query
+
+    # 2. Automated Metadata Filter Detection (Self-Querying)
+    # If the user left scope as "All Documents" (or None), detect if the query targets a specific file
+    if not selected_file or selected_file == "All Documents":
+        available_files = get_indexed_documents(db_path)
+        detected_file = detect_document_filter(user_query, available_files, llm)
+        if detected_file:
+            print(f"🎯 [Self-Querying]: Auto-scoped retrieval to '{detected_file}'.")
+            selected_file = detected_file
+
+    # 3. Setup Retriever & Reranker
     embeddings = get_embeddings()
     vector_db = Chroma(
         collection_name="child_chunks",
@@ -170,35 +255,7 @@ def answer_question(
     # Standalone Cross-Encoder Reranker
     compressor = FlashrankRerank(top_n=FINAL_RETRIEVAL_K)
 
-    # 2. History-Aware Standalone Query Reformulation
-    standalone_query = user_query
-    if chat_history:
-        contextualize_q_prompt = ChatPromptTemplate.from_messages(
-            [
-                (
-                    "system",
-                    "You are a search query optimizer. Given a conversation history and a follow-up user message, "
-                    "rephrase it into a concise, standalone keyword search query (3 to 8 words maximum).\n"
-                    "CRITICAL RULES:\n"
-                    "- DO NOT answer the question.\n"
-                    "- DO NOT explain or add commentary.\n"
-                    "- DO NOT use markdown bolding (**), quotes, or punctuation.\n"
-                    "- Output ONLY the search query string.",
-                ),
-                MessagesPlaceholder("chat_history"),
-                ("human", "{input}"),
-            ]
-        )
-        history_chain = contextualize_q_prompt | llm
-        try:
-            res = history_chain.invoke(
-                {"input": user_query, "chat_history": chat_history}
-            )
-            standalone_query = res.content
-        except Exception:
-            standalone_query = user_query
-
-    # 3. Retrieve Documents via Hybrid Search (Dense + Sparse) & Rerank
+    # 4. Retrieve Documents via Hybrid Search (Dense + Sparse) & Rerank
     dense_docs = dense_pdr.invoke(standalone_query)
     sparse_docs = sparse_pdr.invoke(standalone_query, selected_file=selected_file)
 
