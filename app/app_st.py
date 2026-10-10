@@ -10,6 +10,7 @@ from langchain_core.messages import HumanMessage, AIMessage
 from app.src.ingest import process_pdf_and_ingest, get_indexed_documents
 from app.src.query import answer_question
 from app.src.config import DB_PATH
+from app.src.cache import semantic_cache
 from app.utils.typing_dots import TYPING_DOTS_LOADER_HTML
 
 # 1. Page Configuration
@@ -76,10 +77,18 @@ with st.sidebar:
     )
 
     st.divider()
-    if st.button("Clear Chat History"):
-        st.session_state.chat_history = []
-        st.session_state.ui_messages = []
-        st.rerun()
+
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Clear Chat", use_container_width=True):
+            st.session_state.chat_history = []
+            st.session_state.ui_messages = []
+            st.rerun()
+
+    with col2:
+        if st.button("Flush Cache", use_container_width=True):
+            semantic_cache.clear()
+            st.toast("🧹 Semantic cache cleared successfully!")
 
 # 4. Display Existing Chat Messages
 for msg in st.session_state.ui_messages:

@@ -9,7 +9,7 @@ from langchain_core.messages import HumanMessage, AIMessage
 
 from app.src.ingest import ingest_all_pdfs_in_directory, get_indexed_documents
 from app.src.query import answer_question
-from app.src.config import PDF_PATH, DB_PATH
+from app.src.cache import semantic_cache
 
 
 def print_menu():
@@ -19,7 +19,8 @@ def print_menu():
     print("1. Ingest Default PDF")
     print("2. Ask a Question (Chat Session)")
     print("3. List Indexed Documents")
-    print("4. Exit")
+    print("4. Clear Semantic Cache")
+    print("5. Exit")
 
 
 # Runs a multi-turn chat session with memory and optional document filtering.
@@ -112,7 +113,7 @@ def chat_loop():
 def main():
     while True:
         print_menu()
-        choice = input("Enter choice (1-4): ").strip()
+        choice = input("Enter choice (1-5): ").strip()
 
         if choice == "1":
             try:
@@ -134,11 +135,15 @@ def main():
                 print("\n")
 
         elif choice == "4":
+            semantic_cache.clear()
+            print("✅ Semantic cache cleared successfully!\n")
+
+        elif choice == "5":
             print("Goodbye!")
             sys.exit(0)
 
         else:
-            print("Invalid choice. Please select 1, 2, 3, or 4.\n")
+            print("Invalid choice. Please enter a number from 1 to 5.\n")
 
 
 if __name__ == "__main__":

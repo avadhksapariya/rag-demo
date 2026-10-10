@@ -10,7 +10,7 @@ from langchain_core.prompts import (
     ChatPromptTemplate,
     MessagesPlaceholder,
 )
-from langchain_classic.retrievers import ContextualCompressionRetriever
+from langchain_core.documents import Document
 from langchain_community.document_compressors.flashrank_rerank import FlashrankRerank
 
 from app.src.ingest import get_indexed_documents
@@ -23,6 +23,7 @@ from app.src.config import (
 )
 from app.src.web_search import search_web_fallback
 from app.src.hybrid import ParentBM25Retriever, reciprocal_rank_fusion
+from app.src.cache import semantic_cache
 
 pleasantry_words = {
     "thanks",
@@ -220,6 +221,50 @@ def answer_question(
             print(f"🎯 [Self-Querying]: Auto-scoped retrieval to '{detected_file}'.")
             selected_file = detected_file
 
+    # 2.5 Semantic Cache Lookup
+    cache_result = semantic_cache.lookup(
+        query=standalone_query, selected_file=selected_file
+    )
+
+    if cache_result:
+        cached_data, sim_score = cache_result
+        try:
+            score_val = float(sim_score)
+            print(
+                f"⚡ [Semantic Cache HIT]: Reusing response (Similarity: {score_val:.2f})"
+            )
+        except (ValueError, TypeError):
+            print(f"⚡ [Semantic Cache HIT]: Reusing response (Score: {sim_score})")
+
+        cached_answer = cached_data.get("answer", "")
+        cached_sources = [
+            Document(
+                page_content=s.get("page_content", ""), metadata=s.get("metadata", {})
+            )
+            for s in cached_data.get("context", [])
+        ]
+        cached_grounding = cached_data.get("grounding", {})
+
+        if stream:
+
+            def _cached_stream():
+                words = cached_answer.split(" ")
+                for i, word in enumerate(words):
+                    yield {
+                        "type": "token",
+                        "content": word + (" " if i < len(words) - 1 else ""),
+                    }
+                yield {"type": "sources", "content": cached_sources}
+                yield {"type": "grounding", "content": cached_grounding}
+
+            return _cached_stream()
+
+        return {
+            "answer": cached_answer,
+            "context": cached_sources,
+            "grounding": cached_grounding,
+        }
+
     # 3. Setup Retriever & Reranker
     embeddings = get_embeddings()
     vector_db = Chroma(
@@ -377,11 +422,20 @@ def answer_question(
     qa_chain = qa_prompt | llm
 
     # 7. Return Streaming Generator OR Direct Dictionary
+
+    # Helper to serialize Document objects so context can be stored in JSON cache
+    def _serialize_docs(docs):
+        return [{"page_content": d.page_content, "metadata": d.metadata} for d in docs]
+
     if stream:
 
         def _stream_gen():
+            accumulated_answer = []
+
             if prefix_note:
                 yield {"type": "token", "content": prefix_note}
+                accumulated_answer.append(prefix_note)
+
             for chunk in qa_chain.stream(
                 {
                     "context": context_str,
@@ -391,8 +445,20 @@ def answer_question(
             ):
                 token_text = chunk.content if hasattr(chunk, "content") else str(chunk)
                 if token_text:
+                    accumulated_answer.append(token_text)
                     yield {"type": "token", "content": token_text}
+
             yield {"type": "sources", "content": active_docs}
+
+            full_text = "".join(accumulated_answer)
+            semantic_cache.store(
+                query=standalone_query,
+                data={
+                    "answer": full_text,
+                    "context": _serialize_docs(active_docs),
+                },
+                selected_file=selected_file,
+            )
 
         return _stream_gen()
 
@@ -407,4 +473,15 @@ def answer_question(
     final_text = prefix_note + (
         response.content if hasattr(response, "content") else str(response)
     )
+
+    # Store newly generated response into Semantic Cache
+    semantic_cache.store(
+        query=standalone_query,
+        data={
+            "answer": final_text,
+            "context": _serialize_docs(active_docs),
+        },
+        selected_file=selected_file,
+    )
+
     return {"answer": final_text, "context": active_docs}

@@ -25,5 +25,8 @@ build/
 # RAG / Vector DB
 vector_db/
 
+# cache
+cache/
+
 # OS
 .DS_Store
