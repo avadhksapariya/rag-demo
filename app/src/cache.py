@@ -8,7 +8,7 @@ from app.src.embeddings import get_embeddings
 
 CACHE_FILE = Path("cache/semantic_cache.json")
 
-DEFAULT_TTL_SECONDS = 24 * 3600  # 48 hours expiration
+DEFAULT_TTL_SECONDS = 24 * 3600  # 24 hours expiration
 MAX_CACHE_ENTRIES = 50  # Keep at most 50 recent entries
 
 
