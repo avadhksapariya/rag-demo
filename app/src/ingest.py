@@ -11,7 +11,7 @@ from langchain_classic.storage import LocalFileStore, create_kv_docstore
 from langchain_classic.indexes import SQLRecordManager, index
 
 from app.src.embeddings import get_embeddings
-from app.src.config import DB_PATH, DATA_DIR, PDF_PATH, get_llm
+from app.core.config import DB_PATH, DATA_DIR, PDF_PATH, get_llm
 
 
 # Uses Gemini Vision to summarize an extracted image or diagram.

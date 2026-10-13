@@ -15,7 +15,7 @@ from langchain_community.document_compressors.flashrank_rerank import FlashrankR
 
 from app.src.ingest import get_indexed_documents
 from app.src.embeddings import get_embeddings
-from app.src.config import (
+from app.core.config import (
     get_llm,
     DB_PATH,
     INITIAL_RETRIEVAL_K,

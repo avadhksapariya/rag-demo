@@ -1,4 +1,5 @@
 import os
+import uuid
 import tempfile
 import streamlit as st
 
@@ -9,8 +10,9 @@ load_dotenv()
 from langchain_core.messages import HumanMessage, AIMessage
 from app.src.ingest import process_pdf_and_ingest, get_indexed_documents
 from app.src.query import answer_question
-from app.src.config import DB_PATH
+from app.core.config import DB_PATH
 from app.src.cache import semantic_cache
+from app.src.session_store import session_store
 from app.utils.typing_dots import TYPING_DOTS_LOADER_HTML
 
 # 1. Page Configuration
@@ -23,14 +25,130 @@ st.set_page_config(
 st.title("📚 RAG (Gemini + ChromaDB)")
 
 # 2. Initialize Session State Variables
+session_store.cleanup_empty_sessions()
+
+existing_sessions = session_store.list_sessions()
+
+if "current_session_id" not in st.session_state:
+    if existing_sessions:
+        # Re-attach to the most recent conversation
+        st.session_state.current_session_id = existing_sessions[0]["id"]
+    else:
+        # Only assign a temporary in-memory ID without saving to SQLite yet
+        new_id = str(uuid.uuid4())
+        st.session_state.current_session_id = new_id
+
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []  # Stores LangChain Human/AI message objects
 
 if "ui_messages" not in st.session_state:
-    st.session_state.ui_messages = []  # Stores display dictionary for UI rendering
+    # Load existing messages from DB on initial boot
+    st.session_state.ui_messages = session_store.get_messages(
+        st.session_state.current_session_id
+    )
+
+    # Reconstruct LangChain objects for conversation context
+    for msg in st.session_state.ui_messages:
+        if msg["role"] == "user":
+            st.session_state.chat_history.append(HumanMessage(content=msg["content"]))
+        elif msg["role"] == "assistant":
+            st.session_state.chat_history.append(AIMessage(content=msg["content"]))
+
+
+# Loads a selected session from SQLite into active memory.
+def switch_session(target_session_id: str):
+    st.session_state.current_session_id = target_session_id
+    loaded_msgs = session_store.get_messages(target_session_id)
+    st.session_state.ui_messages = loaded_msgs
+    st.session_state.chat_history = []
+    for m in loaded_msgs:
+        if m["role"] == "user":
+            st.session_state.chat_history.append(HumanMessage(content=m["content"]))
+        elif m["role"] == "assistant":
+            st.session_state.chat_history.append(AIMessage(content=m["content"]))
+
+
+# Starts a fresh session in-memory without polluting the database.
+def start_new_session():
+    # If the current session has no messages, remain on it rather than creating a duplicate
+    if not st.session_state.ui_messages:
+        return
+    new_id = str(uuid.uuid4())
+    st.session_state.current_session_id = new_id
+    st.session_state.ui_messages = []
+    st.session_state.chat_history = []
+
 
 # 3. Sidebar: Multiple PDF Upload & File Selector
 with st.sidebar:
+    st.header("💬 Conversations")
+    if st.button("+ New Chat", use_container_width=True, type="primary"):
+        start_new_session()
+        st.rerun()
+
+    all_sessions = session_store.list_sessions()
+
+    # If the user is currently on an unsaved/blank chat, show it as active in the list
+    is_unsaved_current = not any(
+        s["id"] == st.session_state.current_session_id for s in all_sessions
+    )
+    if is_unsaved_current:
+        all_sessions.insert(
+            0, {"id": st.session_state.current_session_id, "title": "New Chat"}
+        )
+
+    raw_sessions = session_store.list_sessions()
+
+    active_session_obj = next(
+        (s for s in raw_sessions if s["id"] == st.session_state.current_session_id),
+        None,
+    )
+
+    other_sessions = [
+        s for s in raw_sessions if s["id"] != st.session_state.current_session_id
+    ]
+
+    if active_session_obj:
+        all_sessions = [active_session_obj] + other_sessions
+    else:
+        all_sessions = [
+            {"id": st.session_state.current_session_id, "title": "New Chat"}
+        ] + other_sessions
+
+    for s in all_sessions:
+        s_id = s["id"]
+        s_title = s["title"]
+        is_active = s_id == st.session_state.current_session_id
+
+        col_select, col_del = st.columns([0.82, 0.18])
+        with col_select:
+            label = f"● {s_title}" if is_active else s_title
+            if st.button(
+                label,
+                key=f"sess_{s_id}",
+                use_container_width=True,
+                disabled=is_active,
+            ):
+                switch_session(s_id)
+                st.rerun()
+
+        with col_del:
+            if st.button("🗑️", key=f"del_{s_id}", help="Delete this session"):
+                session_store.delete_session(s_id)
+                if s_id == st.session_state.current_session_id:
+                    remaining = [
+                        x for x in session_store.list_sessions() if x["id"] != s_id
+                    ]
+                    if remaining:
+                        switch_session(remaining[0]["id"])
+                    else:
+                        st.session_state.current_session_id = str(uuid.uuid4())
+                        st.session_state.ui_messages = []
+                        st.session_state.chat_history = []
+                st.rerun()
+
+    st.divider()
+
     st.header("📄 Document Ingestion")
     uploaded_files = st.file_uploader(
         "Upload one or more PDFs",
@@ -102,9 +220,18 @@ for msg in st.session_state.ui_messages:
 
 # 5. Handle User Chat Input
 if user_query := st.chat_input("Ask a question about your uploaded document..."):
-    # Render user prompt in UI
+    current_sid = st.session_state.current_session_id
+
+    # If this is the first message in this thread, save the session to DB
+    if not st.session_state.ui_messages:
+        short_title = user_query[:28] + "..." if len(user_query) > 28 else user_query
+        # Create session in DB on first query
+        session_store.create_session(current_sid, title=short_title)
+
+    # Render and persist user question
     st.chat_message("user").markdown(user_query)
     st.session_state.ui_messages.append({"role": "user", "content": user_query})
+    session_store.save_messages(current_sid, role="user", content=user_query)
 
     with st.chat_message("assistant"):
         try:
@@ -169,6 +296,10 @@ if user_query := st.chat_input("Ask a question about your uploaded document...")
 
             st.session_state.chat_history.append(HumanMessage(content=user_query))
             st.session_state.chat_history.append(AIMessage(content=answer_text))
+
+            session_store.save_messages(
+                session_id=current_sid, role="assistant", content=answer_text
+            )
 
         except Exception as e:
             st.error(f"❌ Error generating response: {e}")

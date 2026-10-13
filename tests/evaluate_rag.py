@@ -3,7 +3,7 @@ from langchain_core.output_parsers import JsonOutputParser
 from pydantic import BaseModel, Field
 
 from app.src.query import answer_question
-from app.src.config import get_llm
+from app.core.config import get_llm
 
 # Golden Benchmark Cases
 EVAL_TEST_CASES = [

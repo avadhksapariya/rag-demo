@@ -2,7 +2,7 @@ from functools import lru_cache
 from sentence_transformers import SentenceTransformer
 from langchain_core.embeddings import Embeddings
 
-from app.src.config import EMBEDDING_MODEL
+from app.core.config import EMBEDDING_MODEL
 
 
 class LocalSentenceTransformerEmbeddings(Embeddings):

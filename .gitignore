@@ -28,5 +28,8 @@ vector_db/
 # cache
 cache/
 
+# cache
+storage/
+
 # OS
 .DS_Store
