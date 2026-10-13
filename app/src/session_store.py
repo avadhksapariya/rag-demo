@@ -2,8 +2,7 @@ import sqlite3
 import json
 from pathlib import Path
 from typing import List, Dict, Optional
-
-from app.core.config import DATA_DIR
+from langchain_core.prompts import ChatPromptTemplate
 
 DB_FILE = Path("app/storage/chat_sessions.db")
 
@@ -118,6 +117,27 @@ class SessionStore:
             cursor.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
             cursor.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
             conn.commit()
+
+
+def generate_chat_title(first_query: str, llm) -> str:
+    try:
+        prompt = ChatPromptTemplate.from_messages(
+            [
+                (
+                    "system",
+                    "You generate short, clean chat thread titles.\n"
+                    "Summarize the user question into a concise 2 to 5 word title.\n"
+                    "Do NOT use quotes, punctuation, markdown, or greetings. Output ONLY the title.",
+                ),
+                ("human", "{question}"),
+            ]
+        )
+        chain = prompt | llm
+        response = chain.invoke({"question": first_query})
+        clean_title = response.content.strip().strip('"').strip("'")
+        return clean_title if clean_title else first_query[:25]
+    except Exception:
+        return first_query[:25].strip() + ("..." if len(first_query) > 25 else "")
 
 
 session_store = SessionStore()

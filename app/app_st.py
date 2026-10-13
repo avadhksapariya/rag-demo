@@ -10,9 +10,9 @@ load_dotenv()
 from langchain_core.messages import HumanMessage, AIMessage
 from app.src.ingest import process_pdf_and_ingest, get_indexed_documents
 from app.src.query import answer_question
-from app.core.config import DB_PATH
+from app.core.config import DB_PATH, get_llm
 from app.src.cache import semantic_cache
-from app.src.session_store import session_store
+from app.src.session_store import session_store, generate_chat_title
 from app.utils.typing_dots import TYPING_DOTS_LOADER_HTML
 
 # 1. Page Configuration
@@ -53,6 +53,9 @@ if "ui_messages" not in st.session_state:
             st.session_state.chat_history.append(HumanMessage(content=msg["content"]))
         elif msg["role"] == "assistant":
             st.session_state.chat_history.append(AIMessage(content=msg["content"]))
+
+if "renaming_session_id" not in st.session_state:
+    st.session_state.renaming_session_id = None
 
 
 # Loads a selected session from SQLite into active memory.
@@ -120,32 +123,64 @@ with st.sidebar:
         s_title = s["title"]
         is_active = s_id == st.session_state.current_session_id
 
-        col_select, col_del = st.columns([0.82, 0.18])
-        with col_select:
-            label = f"● {s_title}" if is_active else s_title
-            if st.button(
-                label,
-                key=f"sess_{s_id}",
-                use_container_width=True,
-                disabled=is_active,
-            ):
-                switch_session(s_id)
-                st.rerun()
+        if st.session_state.renaming_session_id == s_id:
+            col_input, col_save = st.columns([0.75, 0.25])
+            with col_input:
+                new_title_val = st.text_input(
+                    "Rename",
+                    value=s_title,
+                    key=f"rename_input_{s_id}",
+                    label_visibility="collapsed",
+                )
+            with col_save:
+                if st.button("✓", key=f"save_{s_id}", help="Save title"):
+                    if new_title_val.strip():
+                        session_store.update_session_title(s_id, new_title_val.strip())
+                        st.session_state.renaming_session_id = None
+                        st.rerun()
+        else:
+            col_select, col_edit, col_del = st.columns([0.8, 0.1, 0.1])
+            with col_select:
+                label = f"● {s_title}" if is_active else s_title
+                if st.button(
+                    label,
+                    key=f"sess_{s_id}",
+                    use_container_width=True,
+                    disabled=is_active,
+                    type="tertiary",
+                ):
+                    switch_session(s_id)
+                    st.rerun()
 
-        with col_del:
-            if st.button("🗑️", key=f"del_{s_id}", help="Delete this session"):
-                session_store.delete_session(s_id)
-                if s_id == st.session_state.current_session_id:
-                    remaining = [
-                        x for x in session_store.list_sessions() if x["id"] != s_id
-                    ]
-                    if remaining:
-                        switch_session(remaining[0]["id"])
-                    else:
-                        st.session_state.current_session_id = str(uuid.uuid4())
-                        st.session_state.ui_messages = []
-                        st.session_state.chat_history = []
-                st.rerun()
+            with col_edit:
+                if st.button(
+                    "✏️",
+                    key=f"edit_{s_id}",
+                    help="Rename Chat",
+                    type="tertiary",
+                ):
+                    st.session_state.renaming_session_id = s_id
+                    st.rerun()
+
+            with col_del:
+                if st.button(
+                    "🗑️",
+                    key=f"del_{s_id}",
+                    help="Delete this session",
+                    type="tertiary",
+                ):
+                    session_store.delete_session(s_id)
+                    if s_id == st.session_state.current_session_id:
+                        remaining = [
+                            x for x in session_store.list_sessions() if x["id"] != s_id
+                        ]
+                        if remaining:
+                            switch_session(remaining[0]["id"])
+                        else:
+                            st.session_state.current_session_id = str(uuid.uuid4())
+                            st.session_state.ui_messages = []
+                            st.session_state.chat_history = []
+                    st.rerun()
 
     st.divider()
 
@@ -224,9 +259,8 @@ if user_query := st.chat_input("Ask a question about your uploaded document...")
 
     # If this is the first message in this thread, save the session to DB
     if not st.session_state.ui_messages:
-        short_title = user_query[:28] + "..." if len(user_query) > 28 else user_query
-        # Create session in DB on first query
-        session_store.create_session(current_sid, title=short_title)
+        auto_title = generate_chat_title(user_query, get_llm())
+        session_store.create_session(current_sid, title=auto_title)
 
     # Render and persist user question
     st.chat_message("user").markdown(user_query)
