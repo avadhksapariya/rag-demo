@@ -24,6 +24,7 @@ from app.core.config import (
 from app.src.web_search import search_web_fallback
 from app.src.hybrid import ParentBM25Retriever, reciprocal_rank_fusion
 from app.src.history_compressor import compress_chat_history
+from app.src.token_budget import trim_documents_to_budget
 from app.src.cache import semantic_cache
 
 pleasantry_words = {
@@ -159,7 +160,7 @@ def answer_question(
         chat_history = []
 
     # ─────────────────────────────────────────────────────────────────────────
-    # 0. Context Window Compression
+    # Context Window Compression
     # ─────────────────────────────────────────────────────────────────────────
     # Retain the last 2 interactions (4 messages) verbatim; compress the rest
     effective_history, updated_summary = compress_chat_history(
@@ -329,10 +330,17 @@ def answer_question(
         retrieved_docs = compressor.compress_documents(
             documents=hybrid_candidates, query=standalone_query
         )
+
+        retrieved_docs, used_tokens = trim_documents_to_budget(
+            retrieved_docs, max_tokens=2500
+        )
+        print(
+            f"📦 [Context Budget]: Packed {len(retrieved_docs)} chunk(s) totaling ~{used_tokens} tokens."
+        )
     else:
         retrieved_docs = []
 
-    # 4. Corrective RAG (CRAG) Check: Evaluate relevance of retrieved context
+    # 5. Corrective RAG (CRAG) Check: Evaluate relevance of retrieved context
     if retrieved_docs:
         context_preview = "\n".join([doc.page_content for doc in retrieved_docs])
         parser = JsonOutputParser(pydantic_object=RetrievalGrade)
@@ -366,7 +374,7 @@ def answer_question(
     else:
         is_relevant = False
 
-    # 5. Corrective Action: Fallback to Web Search if Documents are Irrelevant
+    # 6. Corrective Action: Fallback to Web Search if Documents are Irrelevant
     is_web_fallback = False
     active_docs = retrieved_docs
 
@@ -391,7 +399,7 @@ def answer_question(
                 return _refusal_gen()
             return {"answer": refusal_msg, "context": [], "summary": updated_summary}
 
-    # 6. Build QA Chain: Choose prompt based on Document vs Web search
+    # 7. Build QA Chain: Choose prompt based on Document vs Web search
     summary_section = (
         f"\n\nContext from earlier in the conversation:\n{updated_summary}\n"
         if updated_summary
@@ -444,7 +452,7 @@ def answer_question(
 
     qa_chain = qa_prompt | llm
 
-    # 7. Return Streaming Generator OR Direct Dictionary
+    # 8. Return Streaming Generator OR Direct Dictionary
 
     # Helper to serialize Document objects so context can be stored in JSON cache
     def _serialize_docs(docs):
