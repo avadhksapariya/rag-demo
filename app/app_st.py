@@ -296,7 +296,10 @@ if user_query := st.chat_input("Ask a question about your uploaded document...")
 
                     elif chunk_type == "sources":
                         # In-place mutation: works across all scopes without nonlocal/global
-                        retrieved_sources.extend(chunk["content"])
+                        retrieved_sources.extend(chunk.get("content", []))
+                    elif chunk_type == "summary":
+                        # Store updated running summary for next turns
+                        st.session_state.running_summary = chunk.get("content", "")
 
             # Native Streamlit typewriter streaming
             answer_text = st.write_stream(token_generator())

@@ -23,6 +23,7 @@ from app.core.config import (
 )
 from app.src.web_search import search_web_fallback
 from app.src.hybrid import ParentBM25Retriever, reciprocal_rank_fusion
+from app.src.history_compressor import compress_chat_history
 from app.src.cache import semantic_cache
 
 pleasantry_words = {
@@ -149,9 +150,24 @@ def answer_question(
     db_path: str | Path = DB_PATH,
     selected_file: str | None = None,
     stream: bool = False,
+    running_summary: str = "",
 ) -> Union[dict, Generator[dict, None, None]]:
 
     llm = get_llm()
+
+    if chat_history is None:
+        chat_history = []
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # 0. Context Window Compression
+    # ─────────────────────────────────────────────────────────────────────────
+    # Retain the last 2 interactions (4 messages) verbatim; compress the rest
+    effective_history, updated_summary = compress_chat_history(
+        chat_history=chat_history,
+        llm=llm,
+        keep_recent_pairs=2,
+        existing_summary=running_summary,
+    )
 
     # ─────────────────────────────────────────────────────────────────────────
     # Dynamic Intent Classification flow
@@ -168,9 +184,10 @@ def answer_question(
             def _chitchat_stream():
                 yield {"type": "token", "content": reply}
                 yield {"type": "sources", "content": []}
+                yield {"type": "summary", "content": updated_summary}
 
             return _chitchat_stream()
-        return {"answer": reply, "context": []}
+        return {"answer": reply, "context": [], "summary": updated_summary}
 
     # ─────────────────────────────────────────────────────────────────────────
     # Regular flow
@@ -186,7 +203,7 @@ def answer_question(
 
     # 1. History-Aware Standalone Query Reformulation
     standalone_query = user_query
-    if chat_history:
+    if effective_history:
         contextualize_q_prompt = ChatPromptTemplate.from_messages(
             [
                 (
@@ -206,9 +223,9 @@ def answer_question(
         history_chain = contextualize_q_prompt | llm
         try:
             res = history_chain.invoke(
-                {"input": user_query, "chat_history": chat_history}
+                {"input": user_query, "chat_history": effective_history}
             )
-            standalone_query = res.content
+            standalone_query = res.content.strip()
         except Exception:
             standalone_query = user_query
 
@@ -243,7 +260,6 @@ def answer_question(
             )
             for s in cached_data.get("context", [])
         ]
-        cached_grounding = cached_data.get("grounding", {})
 
         if stream:
 
@@ -255,14 +271,14 @@ def answer_question(
                         "content": word + (" " if i < len(words) - 1 else ""),
                     }
                 yield {"type": "sources", "content": cached_sources}
-                yield {"type": "grounding", "content": cached_grounding}
+                yield {"type": "summary", "content": updated_summary}
 
             return _cached_stream()
 
         return {
             "answer": cached_answer,
             "context": cached_sources,
-            "grounding": cached_grounding,
+            "summary": updated_summary,
         }
 
     # 3. Setup Retriever & Reranker
@@ -370,11 +386,18 @@ def answer_question(
                 def _refusal_gen():
                     yield {"type": "token", "content": refusal_msg}
                     yield {"type": "sources", "content": []}
+                    yield {"type": "summary", "content": updated_summary}
 
                 return _refusal_gen()
-            return {"answer": refusal_msg, "context": []}
+            return {"answer": refusal_msg, "context": [], "summary": updated_summary}
 
     # 6. Build QA Chain: Choose prompt based on Document vs Web search
+    summary_section = (
+        f"\n\nContext from earlier in the conversation:\n{updated_summary}\n"
+        if updated_summary
+        else ""
+    )
+
     if is_web_fallback:
         prefix_note = "*(Note: Information was not found in your indexed documents; retrieved via web search fallback)*\n\n"
         system_prompt = (
@@ -439,7 +462,7 @@ def answer_question(
             for chunk in qa_chain.stream(
                 {
                     "context": context_str,
-                    "chat_history": chat_history,
+                    "chat_history": effective_history,
                     "input": user_query,
                 }
             ):
@@ -449,6 +472,7 @@ def answer_question(
                     yield {"type": "token", "content": token_text}
 
             yield {"type": "sources", "content": active_docs}
+            yield {"type": "summary", "content": updated_summary}
 
             full_text = "".join(accumulated_answer)
             semantic_cache.store(
@@ -466,7 +490,7 @@ def answer_question(
     response = qa_chain.invoke(
         {
             "context": context_str,
-            "chat_history": chat_history,
+            "chat_history": effective_history,
             "input": user_query,
         }
     )
@@ -484,4 +508,8 @@ def answer_question(
         selected_file=selected_file,
     )
 
-    return {"answer": final_text, "context": active_docs}
+    return {
+        "answer": final_text,
+        "context": active_docs,
+        "summary": updated_summary,
+    }
