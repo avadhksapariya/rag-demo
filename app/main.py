@@ -7,9 +7,9 @@ load_dotenv()
 
 from langchain_core.messages import HumanMessage, AIMessage
 
-from app.src.ingest import ingest_all_pdfs_in_directory, get_indexed_documents
+from app.src.ingestion.ingest import ingest_all_pdfs_in_directory, get_indexed_documents
 from app.src.query import answer_question
-from app.src.cache import semantic_cache
+from app.storage.cache import semantic_cache
 
 
 def print_menu():

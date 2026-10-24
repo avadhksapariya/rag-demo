@@ -4,7 +4,9 @@ from pathlib import Path
 from typing import List, Dict, Optional
 from langchain_core.prompts import ChatPromptTemplate
 
-DB_FILE = Path("app/storage/chat_sessions.db")
+from app.core.config import LOCAL_DB_PATH
+
+DB_FILE = LOCAL_DB_PATH / "chat_sessions.db"
 
 
 class SessionStore:

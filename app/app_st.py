@@ -8,11 +8,11 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from langchain_core.messages import HumanMessage, AIMessage
-from app.src.ingest import process_pdf_and_ingest, get_indexed_documents
+from app.src.ingestion.ingest import process_pdf_and_ingest, get_indexed_documents
 from app.src.query import answer_question
 from app.core.config import DB_PATH, get_llm
-from app.src.cache import semantic_cache
-from app.src.session_store import session_store, generate_chat_title
+from app.storage.cache import semantic_cache
+from app.storage.session_store import session_store, generate_chat_title
 from app.utils.typing_dots import TYPING_DOTS_LOADER_HTML
 
 # 1. Page Configuration
@@ -22,7 +22,7 @@ st.set_page_config(
     layout="centered",
 )
 
-st.title("📚 RAG (Gemini + ChromaDB)")
+st.subheader("📚 RAG (Retrieval-Augmented Generation)")
 
 # 2. Initialize Session State Variables
 session_store.cleanup_empty_sessions()

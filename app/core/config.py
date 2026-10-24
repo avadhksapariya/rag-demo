@@ -4,8 +4,9 @@ from pathlib import Path
 from langchain_openai import ChatOpenAI
 from langchain_google_genai import ChatGoogleGenerativeAI
 
-# Base project root directory
-APP_DIR = Path(__file__).resolve().parent.parent
+# Base directories
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+APP_DIR = PROJECT_ROOT / "app"
 
 
 # ── Embedding ─────────────────────────────────────────────────────────────────
@@ -20,9 +21,12 @@ EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"  # to ingest and quer
 OPENROUTER_FREE_MODEL = "openrouter/free"
 GEMINI_LLM_MODEL = "gemini-3.6-flash"
 
+# Root-level paths
+DB_PATH = PROJECT_ROOT / "vector_db"
+LOCAL_DB_PATH = PROJECT_ROOT / "local_db"
+CACHE_PATH = PROJECT_ROOT / "cache"
 
-# Paths
-DB_PATH = APP_DIR / "vector_db"
+# App-level paths
 DATA_DIR = APP_DIR / "data"
 PDF_PATH = DATA_DIR / "SamudraManthan-ChurningOfTheOcean.pdf"  # single-file fallback
 

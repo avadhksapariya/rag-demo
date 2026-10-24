@@ -4,9 +4,10 @@ from typing import Optional, Tuple
 from pathlib import Path
 import numpy as np
 
-from app.src.embeddings import get_embeddings
+from app.core.config import CACHE_PATH
+from app.src.ingestion.embeddings import get_embeddings
 
-CACHE_FILE = Path("cache/semantic_cache.json")
+CACHE_FILE = CACHE_PATH / "semantic_cache.json"
 
 DEFAULT_TTL_SECONDS = 24 * 3600  # 24 hours expiration
 MAX_CACHE_ENTRIES = 50  # Keep at most 50 recent entries
