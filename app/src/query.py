@@ -8,6 +8,7 @@ from app.core.config import get_llm, DB_PATH
 from app.src.ingestion.ingest import get_indexed_documents
 from app.storage.cache import semantic_cache
 from app.src.context.history_compressor import compress_chat_history
+from app.src.context.grounding import verify_grounding
 from app.src.routing.intent_router import (
     classify_user_intent,
     detect_document_filter,
@@ -94,10 +95,19 @@ def answer_question(
             def _chitchat_stream():
                 yield {"type": "token", "content": reply}
                 yield {"type": "sources", "content": []}
+                yield {
+                    "type": "grounding",
+                    "content": {"is_grounded": True, "score": 1.0},
+                }
                 yield {"type": "summary", "content": updated_summary}
 
             return _chitchat_stream()
-        return {"answer": reply, "context": [], "summary": updated_summary}
+        return {
+            "answer": reply,
+            "context": [],
+            "grounding": {"is_grounded": True, "score": 1.0},
+            "summary": updated_summary,
+        }
 
     # 3. Query Reformulation & Filter Detection
     standalone_query = reformulate_standalone_query(user_query, effective_history, llm)
@@ -126,6 +136,10 @@ def answer_question(
             )
             for s in cached_data.get("context", [])
         ]
+        cached_grounding = cached_data.get(
+            "grounding", {"is_grounded": True, "score": 1.0}
+        )
+
         if stream:
 
             def _cached_stream():
@@ -136,12 +150,14 @@ def answer_question(
                         "content": w + (" " if i < len(words) - 1 else ""),
                     }
                 yield {"type": "sources", "content": cached_sources}
+                yield {"type": "grounding", "content": cached_grounding}
                 yield {"type": "summary", "content": updated_summary}
 
             return _cached_stream()
         return {
             "answer": cached_answer,
             "context": cached_sources,
+            "grounding": cached_grounding,
             "summary": updated_summary,
         }
 
@@ -168,10 +184,19 @@ def answer_question(
             def _refusal_gen():
                 yield {"type": "token", "content": refusal_msg}
                 yield {"type": "sources", "content": []}
+                yield {
+                    "type": "grounding",
+                    "content": {"is_grounded": True, "score": 1.0},
+                }
                 yield {"type": "summary", "content": updated_summary}
 
             return _refusal_gen()
-        return {"answer": refusal_msg, "context": [], "summary": updated_summary}
+        return {
+            "answer": refusal_msg,
+            "context": [],
+            "grounding": {"is_grounded": True, "score": 1.0},
+            "summary": updated_summary,
+        }
 
     # 7. Prompt Assembly & QA Chain
     summary_section = (
@@ -215,26 +240,62 @@ def answer_question(
                     accumulated.append(token)
                     yield {"type": "token", "content": token}
 
+            raw_answer = "".join(accumulated)
+
+            # Post-generation grounding check (only for document retrieval, not web fallback)
+            grounding_meta = {"is_grounded": True, "score": 1.0}
+            if not is_web_fallback:
+                grounding_report = verify_grounding(raw_answer, active_docs, llm)
+                grounding_meta = {
+                    "is_grounded": grounding_report["is_grounded"],
+                    "score": grounding_report["score"],
+                }
+
             yield {"type": "sources", "content": active_docs}
+            yield {"type": "grounding", "content": grounding_meta}
             yield {"type": "summary", "content": updated_summary}
 
-            full_text = "".join(accumulated)
             semantic_cache.store(
                 query=standalone_query,
-                data={"answer": full_text, "context": _serialize_docs(active_docs)},
+                data={
+                    "answer": raw_answer,
+                    "context": _serialize_docs(active_docs),
+                    "grounding": grounding_meta,
+                },
                 selected_file=selected_file,
             )
 
         return _stream_gen()
 
     response = qa_chain.invoke({"chat_history": effective_history, "input": user_query})
-    final_text = prefix_note + (
+    raw_answer = prefix_note + (
         response.content if hasattr(response, "content") else str(response)
     )
 
+    grounding_meta = {"is_grounded": True, "score": 1.0}
+    final_answer = raw_answer
+
+    if not is_web_fallback:
+        grounding_report = verify_grounding(raw_answer, active_docs, llm)
+        grounding_meta = {
+            "is_grounded": grounding_report["is_grounded"],
+            "score": grounding_report["score"],
+        }
+        if grounding_report.get("corrected_answer"):
+            final_answer = prefix_note + grounding_report["corrected_answer"]
+
     semantic_cache.store(
         query=standalone_query,
-        data={"answer": final_text, "context": _serialize_docs(active_docs)},
+        data={
+            "answer": final_answer,
+            "context": _serialize_docs(active_docs),
+            "grounding": grounding_meta,
+        },
         selected_file=selected_file,
     )
-    return {"answer": final_text, "context": active_docs, "summary": updated_summary}
+    return {
+        "answer": final_answer,
+        "context": active_docs,
+        "grounding": grounding_meta,
+        "summary": updated_summary,
+    }

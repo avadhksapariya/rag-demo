@@ -247,10 +247,30 @@ with st.sidebar:
 for msg in st.session_state.ui_messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
+
+        # Display grounding trust badge if available
+        if msg.get("grounding"):
+            score = msg["grounding"].get("score", 1.0)
+            if score >= 0.8:
+                st.caption(
+                    f"🛡️ Grounding Confidence: **{int(score * 100)}%** (Factually verified)"
+                )
+            else:
+                st.caption(
+                    f"⚠️ Grounding Confidence: **{int(score * 100)}%** (Some claims could not be verified)"
+                )
+
         if "sources" in msg and msg["sources"]:
             with st.expander("📌 Retrieved Sources & Citations"):
                 for idx, src in enumerate(msg["sources"]):
-                    st.markdown(f"**[{idx+1}] Page {src['page']}**")
+                    page_info = (
+                        f" - Page {src['page']}" if src.get("page") is not None else ""
+                    )
+                    st.markdown(
+                        f"**[{idx+1}] {src.get('file', 'Document')}{page_info}**"
+                    )
+                    if src.get("url"):
+                        st.markdown(f"🔗 [Source Link]({src['url']})")
                     st.caption(src["text"])
 
 # 5. Handle User Chat Input
@@ -282,6 +302,7 @@ if user_query := st.chat_input("Ask a question about your uploaded document...")
 
             # Container list for sources captured during the stream
             retrieved_sources = []
+            grounding_info = {}
 
             def token_generator():
                 cleared_loader = False
@@ -297,12 +318,25 @@ if user_query := st.chat_input("Ask a question about your uploaded document...")
                     elif chunk_type == "sources":
                         # In-place mutation: works across all scopes without nonlocal/global
                         retrieved_sources.extend(chunk.get("content", []))
+                    elif chunk_type == "grounding":
+                        grounding_info.update(chunk.get("content", {}))
                     elif chunk_type == "summary":
                         # Store updated running summary for next turns
                         st.session_state.running_summary = chunk.get("content", "")
 
             # Native Streamlit typewriter streaming
             answer_text = st.write_stream(token_generator())
+
+            if grounding_info:
+                score = grounding_info.get("score", 1.0)
+                if score >= 0.8:
+                    st.caption(
+                        f"🛡️ Grounding Confidence: **{int(score * 100)}%** (Factually verified)"
+                    )
+                else:
+                    st.caption(
+                        f"⚠️ Grounding Confidence: **{int(score * 100)}%** (Some claims could not be verified)"
+                    )
 
             # Format retrieved sources
             sources_data = []
