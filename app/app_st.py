@@ -20,10 +20,8 @@ from app.utils.typing_dots import TYPING_DOTS_LOADER_HTML
 st.set_page_config(
     page_title="RAG Demo",
     page_icon="📚",
-    layout="centered",
+    layout="wide",
 )
-
-st.subheader("📚 RAG (Retrieval-Augmented Generation)")
 
 # 2. Initialize Session State Variables
 session_store.cleanup_empty_sessions()
@@ -32,23 +30,17 @@ existing_sessions = session_store.list_sessions()
 
 if "current_session_id" not in st.session_state:
     if existing_sessions:
-        # Re-attach to the most recent conversation
         st.session_state.current_session_id = existing_sessions[0]["id"]
     else:
-        # Only assign a temporary in-memory ID without saving to SQLite yet
-        new_id = str(uuid.uuid4())
-        st.session_state.current_session_id = new_id
+        st.session_state.current_session_id = str(uuid.uuid4())
 
 if "chat_history" not in st.session_state:
-    st.session_state.chat_history = []  # Stores LangChain Human/AI message objects
+    st.session_state.chat_history = []
 
 if "ui_messages" not in st.session_state:
-    # Load existing messages from DB on initial boot
     st.session_state.ui_messages = session_store.get_messages(
         st.session_state.current_session_id
     )
-
-    # Reconstruct LangChain objects for conversation context
     for msg in st.session_state.ui_messages:
         if msg["role"] == "user":
             st.session_state.chat_history.append(HumanMessage(content=msg["content"]))
@@ -58,8 +50,11 @@ if "ui_messages" not in st.session_state:
 if "renaming_session_id" not in st.session_state:
     st.session_state.renaming_session_id = None
 
+# Scope selection state (defaults to "All Documents")
+if "selected_file" not in st.session_state:
+    st.session_state.selected_file = "All Documents"
 
-# Loads a selected session from SQLite into active memory.
+
 def switch_session(target_session_id: str):
     st.session_state.current_session_id = target_session_id
     loaded_msgs = session_store.get_messages(target_session_id)
@@ -72,265 +67,250 @@ def switch_session(target_session_id: str):
             st.session_state.chat_history.append(AIMessage(content=m["content"]))
 
 
-# Starts a fresh session in-memory without polluting the database.
 def start_new_session():
-    # If the current session has no messages, remain on it rather than creating a duplicate
     if not st.session_state.ui_messages:
         return
-    new_id = str(uuid.uuid4())
-    st.session_state.current_session_id = new_id
+    st.session_state.current_session_id = str(uuid.uuid4())
     st.session_state.ui_messages = []
     st.session_state.chat_history = []
+    # Reset scope back to default on new chat if desired
+    st.session_state.selected_file = "All Documents"
 
 
-# 3. Sidebar: Multiple PDF Upload & File Selector
+# 3. Sidebar
 with st.sidebar:
-    st.header("💬 Conversations")
-    if st.button("+ New Chat", use_container_width=True, type="primary"):
-        start_new_session()
-        st.rerun()
+    st.subheader("📚 Retrieval-Augmented Generation")
+    tab_chats, tab_docs = st.tabs(["💬 Conversations", "📄 Ingestion & Tools"])
 
-    all_sessions = session_store.list_sessions()
+    # --- TAB 1: Conversations History ---
+    with tab_chats:
+        if st.button("＋ New Chat", use_container_width=True, type="primary"):
+            start_new_session()
+            st.rerun()
 
-    # If the user is currently on an unsaved/blank chat, show it as active in the list
-    is_unsaved_current = not any(
-        s["id"] == st.session_state.current_session_id for s in all_sessions
-    )
-    if is_unsaved_current:
-        all_sessions.insert(
-            0, {"id": st.session_state.current_session_id, "title": "New Chat"}
+        raw_sessions = session_store.list_sessions()
+        active_session_obj = next(
+            (s for s in raw_sessions if s["id"] == st.session_state.current_session_id),
+            None,
+        )
+        other_sessions = [
+            s for s in raw_sessions if s["id"] != st.session_state.current_session_id
+        ]
+
+        if active_session_obj:
+            all_sessions = [active_session_obj] + other_sessions
+        else:
+            all_sessions = [
+                {"id": st.session_state.current_session_id, "title": "New Chat"}
+            ] + other_sessions
+
+        with st.container(height=320, border=False):
+            for s in all_sessions:
+                s_id = s["id"]
+                s_title = s["title"]
+                is_active = s_id == st.session_state.current_session_id
+
+                # Use an isolated row container to prevent widget re-layout flashes
+                row = st.container()
+
+                if st.session_state.renaming_session_id == s_id:
+                    col_input, col_save, col_cancel = row.columns([0.76, 0.12, 0.12])
+
+                    with col_input:
+                        new_title_val = st.text_input(
+                            "Rename",
+                            value=s_title,
+                            key=f"rename_input_{s_id}",
+                            label_visibility="collapsed",
+                        )
+
+                    with col_save:
+                        if st.button(
+                            "✓", key=f"save_{s_id}", help="Save title", type="tertiary"
+                        ):
+                            if new_title_val.strip():
+                                session_store.update_session_title(
+                                    s_id, new_title_val.strip()
+                                )
+                            st.session_state.renaming_session_id = None
+                            st.rerun()
+
+                    with col_cancel:
+                        if st.button(
+                            "✕",
+                            key=f"cancel_{s_id}",
+                            help="Cancel rename",
+                            type="tertiary",
+                        ):
+                            st.session_state.renaming_session_id = None
+                            st.rerun()
+
+                else:
+                    col_select, col_edit, col_del = row.columns([0.76, 0.12, 0.12])
+
+                    with col_select:
+                        label = f"● {s_title}" if is_active else s_title
+                        if st.button(
+                            label,
+                            key=f"sess_{s_id}",
+                            use_container_width=True,
+                            disabled=is_active,
+                            type="secondary" if is_active else "tertiary",
+                        ):
+                            switch_session(s_id)
+                            st.rerun()
+
+                    with col_edit:
+                        if st.button(
+                            "✏️",
+                            key=f"edit_{s_id}",
+                            help="Rename Chat",
+                            type="tertiary",
+                        ):
+                            st.session_state.renaming_session_id = s_id
+                            st.rerun()
+
+                    with col_del:
+                        if st.button(
+                            "🗑️",
+                            key=f"del_{s_id}",
+                            help="Delete this session",
+                            type="tertiary",
+                        ):
+                            session_store.delete_session(s_id)
+                            if s_id == st.session_state.current_session_id:
+                                remaining = [
+                                    x
+                                    for x in session_store.list_sessions()
+                                    if x["id"] != s_id
+                                ]
+                                if remaining:
+                                    switch_session(remaining[0]["id"])
+                                else:
+                                    st.session_state.current_session_id = str(
+                                        uuid.uuid4()
+                                    )
+                                    st.session_state.ui_messages = []
+                                    st.session_state.chat_history = []
+                            st.rerun()
+
+    # --- TAB 2: Document Ingestion & Utilities ---
+    with tab_docs:
+        st.markdown("#### 📄 Document Ingestion")
+        uploaded_files = st.file_uploader(
+            "Upload one or more PDFs",
+            type=["pdf"],
+            accept_multiple_files=True,
         )
 
-    raw_sessions = session_store.list_sessions()
+        if uploaded_files:
+            if st.button(
+                "Process & Ingest PDF", use_container_width=True, type="primary"
+            ):
+                with st.spinner("Processing PDF(s) and updating vector store..."):
+                    for uploaded_file in uploaded_files:
+                        with tempfile.NamedTemporaryFile(
+                            delete=False, suffix=".pdf"
+                        ) as tmp_file:
+                            tmp_file.write(uploaded_file.getvalue())
+                            tmp_file.flush()
+                            temp_pdf_path = tmp_file.name
 
-    active_session_obj = next(
-        (s for s in raw_sessions if s["id"] == st.session_state.current_session_id),
-        None,
-    )
+                        try:
+                            process_pdf_and_ingest(
+                                pdf_path=temp_pdf_path,
+                                db_path=DB_PATH,
+                                filename_override=uploaded_file.name,
+                            )
+                        except Exception as e:
+                            st.error(f"❌ Error during ingestion: {e}")
+                        finally:
+                            if os.path.exists(temp_pdf_path):
+                                os.remove(temp_pdf_path)
 
-    other_sessions = [
-        s for s in raw_sessions if s["id"] != st.session_state.current_session_id
-    ]
-
-    if active_session_obj:
-        all_sessions = [active_session_obj] + other_sessions
-    else:
-        all_sessions = [
-            {"id": st.session_state.current_session_id, "title": "New Chat"}
-        ] + other_sessions
-
-    for s in all_sessions:
-        s_id = s["id"]
-        s_title = s["title"]
-        is_active = s_id == st.session_state.current_session_id
-
-        if st.session_state.renaming_session_id == s_id:
-            col_input, col_save = st.columns([0.75, 0.25])
-            with col_input:
-                new_title_val = st.text_input(
-                    "Rename",
-                    value=s_title,
-                    key=f"rename_input_{s_id}",
-                    label_visibility="collapsed",
-                )
-            with col_save:
-                if st.button("✓", key=f"save_{s_id}", help="Save title"):
-                    if new_title_val.strip():
-                        session_store.update_session_title(s_id, new_title_val.strip())
-                        st.session_state.renaming_session_id = None
-                        st.rerun()
-        else:
-            col_select, col_edit, col_del = st.columns([0.8, 0.1, 0.1])
-            with col_select:
-                label = f"● {s_title}" if is_active else s_title
-                if st.button(
-                    label,
-                    key=f"sess_{s_id}",
-                    use_container_width=True,
-                    disabled=is_active,
-                    type="tertiary",
-                ):
-                    switch_session(s_id)
+                    st.success("✅ Ingestion complete! Vector store updated.")
                     st.rerun()
 
-            with col_edit:
-                if st.button(
-                    "✏️",
-                    key=f"edit_{s_id}",
-                    help="Rename Chat",
-                    type="tertiary",
-                ):
-                    st.session_state.renaming_session_id = s_id
-                    st.rerun()
+        st.divider()
+        st.markdown("#### ⚡ Cache Operations")
+        if st.button("Flush Cache", use_container_width=True):
+            semantic_cache.clear()
+            st.toast("🧹 Semantic cache cleared successfully!")
 
-            with col_del:
-                if st.button(
-                    "🗑️",
-                    key=f"del_{s_id}",
-                    help="Delete this session",
-                    type="tertiary",
-                ):
-                    session_store.delete_session(s_id)
-                    if s_id == st.session_state.current_session_id:
-                        remaining = [
-                            x for x in session_store.list_sessions() if x["id"] != s_id
-                        ]
-                        if remaining:
-                            switch_session(remaining[0]["id"])
-                        else:
-                            st.session_state.current_session_id = str(uuid.uuid4())
-                            st.session_state.ui_messages = []
-                            st.session_state.chat_history = []
-                    st.rerun()
 
-    st.divider()
+# 4. Main Chat Area: Centered layout
+left_pad, main_chat_col, right_pad = st.columns([1, 6, 1])
 
-    st.header("📄 Document Ingestion")
-    uploaded_files = st.file_uploader(
-        "Upload one or more PDFs",
-        type=["pdf"],
-        max_upload_size=1,  # upto 1 MB
-        accept_multiple_files=True,
-    )
+with main_chat_col:
+    # Resolve current active session title
+    current_title = "New Chat"
+    for s in raw_sessions:
+        if s["id"] == st.session_state.current_session_id:
+            current_title = s["title"]
+            break
 
-    if uploaded_files:
-        if st.button("Process & Ingest PDF"):
-            with st.spinner("Processing PDF(s) and updating vector store..."):
-                for uploaded_file in uploaded_files:
-                    # Save uploaded file to a temp directory
-                    with tempfile.NamedTemporaryFile(
-                        delete=False, suffix=".pdf"
-                    ) as tmp_file:
-                        tmp_file.write(uploaded_file.getvalue())
-                        tmp_file.flush()  # Forces Python to flush data to disk
-                        temp_pdf_path = tmp_file.name
+    # Top Toolbar: Title, In-Place Scope Selector Popover, Clear Button
+    col_header, col_scope_popover, col_clear = st.columns([0.48, 0.34, 0.18])
 
-                    try:
-                        process_pdf_and_ingest(
-                            pdf_path=temp_pdf_path,
-                            db_path=DB_PATH,
-                            filename_override=uploaded_file.name,
-                        )
-                    except Exception as e:
-                        st.error(f"❌ Error during ingestion: {e}")
-                    finally:
-                        if os.path.exists(temp_pdf_path):
-                            os.remove(temp_pdf_path)
+    with col_header:
+        st.markdown(
+            f"<h4 style='margin: 0; padding-top: 4px; font-weight: 600;'>💬 {current_title}</h4>",
+            unsafe_allow_html=True,
+        )
 
-                st.success("✅ Ingestion complete! Vector store updated.")
+    with col_scope_popover:
+        # Load available indexed documents
+        indexed_docs = get_indexed_documents(DB_PATH)
+        scope_options = ["All Documents"] + indexed_docs
+
+        # Ensure current selection exists in available options
+        if st.session_state.selected_file not in scope_options:
+            st.session_state.selected_file = "All Documents"
+
+        current_selected = st.session_state.selected_file
+
+        # Display label: compact with truncation if file name is long
+        badge_label = (
+            "🎯 All Documents"
+            if current_selected == "All Documents"
+            else (
+                f"🎯 {current_selected[:18]}..."
+                if len(current_selected) > 18
+                else f"🎯 {current_selected}"
+            )
+        )
+
+        # Clickable Scope Popover directly inside the chat top bar
+        with st.popover(
+            badge_label, use_container_width=True, help="Change document filter scope"
+        ):
+            st.caption("Select Context Scope")
+            chosen_scope = st.selectbox(
+                "Filter retrieval context:",
+                options=scope_options,
+                index=scope_options.index(st.session_state.selected_file),
+                label_visibility="collapsed",
+                key="scope_selector_widget",
+            )
+            if chosen_scope != st.session_state.selected_file:
+                st.session_state.selected_file = chosen_scope
                 st.rerun()
 
-    st.header("🔍 Document Filter")
-    indexed_docs = get_indexed_documents(DB_PATH)
-
-    options = ["All Documents"] + indexed_docs
-    selected_file = st.selectbox(
-        "Choose context scope:",
-        options=options,
-        index=0,
-    )
-
-    st.divider()
-
-    col1, col2 = st.columns(2)
-    with col1:
+    with col_clear:
         if st.button("Clear Chat", use_container_width=True):
             st.session_state.chat_history = []
             st.session_state.ui_messages = []
             st.rerun()
 
-    with col2:
-        if st.button("Flush Cache", use_container_width=True):
-            semantic_cache.clear()
-            st.toast("🧹 Semantic cache cleared successfully!")
+    st.divider()
 
-# 4. Display Existing Chat Messages
-for msg in st.session_state.ui_messages:
-    with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
+    # 5. Display Existing Chat Messages
+    for msg in st.session_state.ui_messages:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
 
-        # Display grounding trust badge if available
-        if msg.get("grounding"):
-            score = msg["grounding"].get("score", 1.0)
-            if score >= 0.8:
-                st.caption(
-                    f"🛡️ Grounding Confidence: **{int(score * 100)}%** (Factually verified)"
-                )
-            else:
-                st.caption(
-                    f"⚠️ Grounding Confidence: **{int(score * 100)}%** (Some claims could not be verified)"
-                )
-
-        if "sources" in msg and msg["sources"]:
-            with st.expander("📌 Retrieved Sources & Citations"):
-                for idx, src in enumerate(msg["sources"]):
-                    page_info = (
-                        f" - Page {src['page']}" if src.get("page") is not None else ""
-                    )
-                    st.markdown(
-                        f"**[{idx+1}] {src.get('file', 'Document')}{page_info}**"
-                    )
-                    st.markdown(
-                        f"<div style='font-size: 0.9em; line-height: 1.5; color: #636e72;'>{src['text']}</div>",
-                        unsafe_allow_html=True,
-                    )
-
-# 5. Handle User Chat Input
-if user_query := st.chat_input("Ask a question about your uploaded document..."):
-    current_sid = st.session_state.current_session_id
-
-    # If this is the first message in this thread, save the session to DB
-    if not st.session_state.ui_messages:
-        auto_title = generate_chat_title(user_query, get_llm())
-        session_store.create_session(current_sid, title=auto_title)
-
-    # Render and persist user question
-    st.chat_message("user").markdown(user_query)
-    st.session_state.ui_messages.append({"role": "user", "content": user_query})
-    session_store.save_messages(current_sid, role="user", content=user_query)
-
-    with st.chat_message("assistant"):
-        try:
-            placeholder = st.empty()
-            placeholder.markdown(TYPING_DOTS_LOADER_HTML, unsafe_allow_html=True)
-
-            stream_gen = answer_question(
-                user_query=user_query,
-                chat_history=st.session_state.chat_history,
-                db_path=DB_PATH,
-                selected_file=selected_file,
-                stream=True,
-            )
-
-            # Container list for sources captured during the stream
-            retrieved_sources = []
-            grounding_info = {}
-
-            def token_generator():
-                cleared_loader = False
-
-                for chunk in stream_gen:
-                    chunk_type = chunk.get("type")
-                    if chunk_type == "token":
-                        if not cleared_loader:
-                            placeholder.empty()
-                            cleared_loader = True
-                        yield chunk["content"]
-
-                    elif chunk_type == "sources":
-                        # In-place mutation: works across all scopes without nonlocal/global
-                        retrieved_sources.extend(chunk.get("content", []))
-                    elif chunk_type == "grounding":
-                        grounding_info.update(chunk.get("content", {}))
-                    elif chunk_type == "summary":
-                        # Store updated running summary for next turns
-                        st.session_state.running_summary = chunk.get("content", "")
-
-            # Native Streamlit typewriter streaming
-            answer_text = st.write_stream(token_generator())
-
-            if grounding_info:
-                score = grounding_info.get("score", 1.0)
+            if msg.get("grounding"):
+                score = msg["grounding"].get("score", 1.0)
                 if score >= 0.8:
                     st.caption(
                         f"🛡️ Grounding Confidence: **{int(score * 100)}%** (Factually verified)"
@@ -340,55 +320,129 @@ if user_query := st.chat_input("Ask a question about your uploaded document...")
                         f"⚠️ Grounding Confidence: **{int(score * 100)}%** (Some claims could not be verified)"
                     )
 
-            # Format retrieved sources
-            sources_data = []
-            for doc in retrieved_sources:
-                page = doc.metadata.get("page", 0) + 1
-                file_name = doc.metadata.get("source_file", "Document")
-
-                # Generate snippet highlighting the exact key sentence
-                snippet_text = extract_highlighted_snippet(
-                    doc_text=doc.page_content,
-                    query=user_query,
-                    max_sentences=2,
-                )
-
-                sources_data.append(
-                    {
-                        "file": file_name,
-                        "page": page,
-                        "text": snippet_text,
-                    }
-                )
-
-            if sources_data:
+            if "sources" in msg and msg["sources"]:
                 with st.expander("📌 Retrieved Sources & Citations"):
-                    for idx, src in enumerate(sources_data):
+                    for idx, src in enumerate(msg["sources"]):
                         page_info = (
                             f" - Page {src['page']}"
                             if src.get("page") is not None
                             else ""
                         )
-                        st.markdown(f"**[{idx+1}] {src['file']}{page_info}**")
+                        st.markdown(
+                            f"**[{idx+1}] {src.get('file', 'Document')}{page_info}**"
+                        )
                         st.markdown(
                             f"<div style='font-size: 0.9em; line-height: 1.5; color: #636e72;'>{src['text']}</div>",
                             unsafe_allow_html=True,
                         )
 
-            st.session_state.ui_messages.append(
-                {
-                    "role": "assistant",
-                    "content": answer_text,
-                    "sources": sources_data,
-                }
-            )
+    # 6. Handle User Chat Input
+    if user_query := st.chat_input("Ask a question about your uploaded document..."):
+        current_sid = st.session_state.current_session_id
 
-            st.session_state.chat_history.append(HumanMessage(content=user_query))
-            st.session_state.chat_history.append(AIMessage(content=answer_text))
+        if not st.session_state.ui_messages:
+            auto_title = generate_chat_title(user_query, get_llm())
+            session_store.create_session(current_sid, title=auto_title)
 
-            session_store.save_messages(
-                session_id=current_sid, role="assistant", content=answer_text
-            )
+        st.chat_message("user").markdown(user_query)
+        st.session_state.ui_messages.append({"role": "user", "content": user_query})
+        session_store.save_messages(current_sid, role="user", content=user_query)
 
-        except Exception as e:
-            st.error(f"❌ Error generating response: {e}")
+        with st.chat_message("assistant"):
+            try:
+                placeholder = st.empty()
+                placeholder.markdown(TYPING_DOTS_LOADER_HTML, unsafe_allow_html=True)
+
+                # Pass the selected scope directly from session state
+                stream_gen = answer_question(
+                    user_query=user_query,
+                    chat_history=st.session_state.chat_history,
+                    db_path=DB_PATH,
+                    selected_file=st.session_state.selected_file,
+                    stream=True,
+                )
+
+                retrieved_sources = []
+                grounding_info = {}
+
+                def token_generator():
+                    cleared_loader = False
+                    for chunk in stream_gen:
+                        chunk_type = chunk.get("type")
+                        if chunk_type == "token":
+                            if not cleared_loader:
+                                placeholder.empty()
+                                cleared_loader = True
+                            yield chunk["content"]
+
+                        elif chunk_type == "sources":
+                            retrieved_sources.extend(chunk.get("content", []))
+                        elif chunk_type == "grounding":
+                            grounding_info.update(chunk.get("content", {}))
+                        elif chunk_type == "summary":
+                            st.session_state.running_summary = chunk.get("content", "")
+
+                answer_text = st.write_stream(token_generator())
+
+                if grounding_info:
+                    score = grounding_info.get("score", 1.0)
+                    if score >= 0.8:
+                        st.caption(
+                            f"🛡️ Grounding Confidence: **{int(score * 100)}%** (Factually verified)"
+                        )
+                    else:
+                        st.caption(
+                            f"⚠️ Grounding Confidence: **{int(score * 100)}%** (Some claims could not be verified)"
+                        )
+
+                sources_data = []
+                for doc in retrieved_sources:
+                    page = doc.metadata.get("page", 0) + 1
+                    file_name = doc.metadata.get("source_file", "Document")
+
+                    snippet_text = extract_highlighted_snippet(
+                        doc_text=doc.page_content,
+                        query=user_query,
+                        max_sentences=2,
+                    )
+
+                    sources_data.append(
+                        {
+                            "file": file_name,
+                            "page": page,
+                            "text": snippet_text,
+                        }
+                    )
+
+                if sources_data:
+                    with st.expander("📌 Retrieved Sources & Citations"):
+                        for idx, src in enumerate(sources_data):
+                            page_info = (
+                                f" - Page {src['page']}"
+                                if src.get("page") is not None
+                                else ""
+                            )
+                            st.markdown(f"**[{idx+1}] {src['file']}{page_info}**")
+                            st.markdown(
+                                f"<div style='font-size: 0.9em; line-height: 1.5; color: #636e72;'>{src['text']}</div>",
+                                unsafe_allow_html=True,
+                            )
+
+                st.session_state.ui_messages.append(
+                    {
+                        "role": "assistant",
+                        "content": answer_text,
+                        "sources": sources_data,
+                        "grounding": grounding_info,
+                    }
+                )
+
+                st.session_state.chat_history.append(HumanMessage(content=user_query))
+                st.session_state.chat_history.append(AIMessage(content=answer_text))
+
+                session_store.save_messages(
+                    session_id=current_sid, role="assistant", content=answer_text
+                )
+
+            except Exception as e:
+                st.error(f"❌ Error generating response: {e}")
