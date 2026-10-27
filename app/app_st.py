@@ -10,6 +10,7 @@ load_dotenv()
 from langchain_core.messages import HumanMessage, AIMessage
 from app.src.ingestion.ingest import process_pdf_and_ingest, get_indexed_documents
 from app.src.query import answer_question
+from app.src.retrieval.highlighter import extract_highlighted_snippet
 from app.core.config import DB_PATH, get_llm
 from app.storage.cache import semantic_cache
 from app.storage.session_store import session_store, generate_chat_title
@@ -269,9 +270,10 @@ for msg in st.session_state.ui_messages:
                     st.markdown(
                         f"**[{idx+1}] {src.get('file', 'Document')}{page_info}**"
                     )
-                    if src.get("url"):
-                        st.markdown(f"🔗 [Source Link]({src['url']})")
-                    st.caption(src["text"])
+                    st.markdown(
+                        f"<div style='font-size: 0.9em; line-height: 1.5; color: #636e72;'>{src['text']}</div>",
+                        unsafe_allow_html=True,
+                    )
 
 # 5. Handle User Chat Input
 if user_query := st.chat_input("Ask a question about your uploaded document..."):
@@ -343,19 +345,35 @@ if user_query := st.chat_input("Ask a question about your uploaded document...")
             for doc in retrieved_sources:
                 page = doc.metadata.get("page", 0) + 1
                 file_name = doc.metadata.get("source_file", "Document")
+
+                # Generate snippet highlighting the exact key sentence
+                snippet_text = extract_highlighted_snippet(
+                    doc_text=doc.page_content,
+                    query=user_query,
+                    max_sentences=2,
+                )
+
                 sources_data.append(
                     {
                         "file": file_name,
                         "page": page,
-                        "text": doc.page_content[:200] + "...",
+                        "text": snippet_text,
                     }
                 )
 
             if sources_data:
                 with st.expander("📌 Retrieved Sources & Citations"):
                     for idx, src in enumerate(sources_data):
-                        st.markdown(f"**[{idx+1}] {src['file']} - Page {src['page']}**")
-                        st.caption(src["text"])
+                        page_info = (
+                            f" - Page {src['page']}"
+                            if src.get("page") is not None
+                            else ""
+                        )
+                        st.markdown(f"**[{idx+1}] {src['file']}{page_info}**")
+                        st.markdown(
+                            f"<div style='font-size: 0.9em; line-height: 1.5; color: #636e72;'>{src['text']}</div>",
+                            unsafe_allow_html=True,
+                        )
 
             st.session_state.ui_messages.append(
                 {
