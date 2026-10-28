@@ -11,6 +11,7 @@ from langchain_core.messages import HumanMessage, AIMessage
 from app.src.ingestion.ingest import process_pdf_and_ingest, get_indexed_documents
 from app.src.query import answer_question
 from app.src.retrieval.highlighter import extract_highlighted_snippet
+from app.src.context.export_chat import format_chat_as_markdown
 from app.core.config import DB_PATH, get_llm
 from app.storage.cache import semantic_cache
 from app.storage.session_store import session_store, generate_chat_title
@@ -249,27 +250,33 @@ with main_chat_col:
             current_title = s["title"]
             break
 
+    st.markdown(
+        f"""
+        <h4 style="
+            margin: 0;
+            padding-top: 4px;
+            padding-bottom: 12px;
+            font-weight: 600;
+        ">
+            💬 {current_title}
+        </h4>
+        """,
+        unsafe_allow_html=True,
+    )
+
     # Top Toolbar: Title, In-Place Scope Selector Popover, Clear Button
-    col_header, col_scope_popover, col_clear = st.columns([0.48, 0.34, 0.18])
+    col_scope, col_clear, col_export = st.columns([0.38, 0.28, 0.34])
 
-    with col_header:
-        st.markdown(
-            f"<h4 style='margin: 0; padding-top: 4px; font-weight: 600;'>💬 {current_title}</h4>",
-            unsafe_allow_html=True,
-        )
-
-    with col_scope_popover:
-        # Load available indexed documents
+    with col_scope:
         indexed_docs = get_indexed_documents(DB_PATH)
         scope_options = ["All Documents"] + indexed_docs
 
-        # Ensure current selection exists in available options
+        # Validate current selection
         if st.session_state.selected_file not in scope_options:
             st.session_state.selected_file = "All Documents"
 
         current_selected = st.session_state.selected_file
 
-        # Display label: compact with truncation if file name is long
         badge_label = (
             "🎯 All Documents"
             if current_selected == "All Documents"
@@ -280,11 +287,13 @@ with main_chat_col:
             )
         )
 
-        # Clickable Scope Popover directly inside the chat top bar
         with st.popover(
-            badge_label, use_container_width=True, help="Change document filter scope"
+            badge_label,
+            use_container_width=True,
+            help="Change document filter scope",
         ):
             st.caption("Select Context Scope")
+
             chosen_scope = st.selectbox(
                 "Filter retrieval context:",
                 options=scope_options,
@@ -292,15 +301,46 @@ with main_chat_col:
                 label_visibility="collapsed",
                 key="scope_selector_widget",
             )
+
             if chosen_scope != st.session_state.selected_file:
                 st.session_state.selected_file = chosen_scope
                 st.rerun()
 
     with col_clear:
-        if st.button("Clear Chat", use_container_width=True):
+        if st.button(
+            "🗑️ Clear Chat",
+            use_container_width=True,
+            key="clear_chat_button",
+        ):
             st.session_state.chat_history = []
             st.session_state.ui_messages = []
             st.rerun()
+
+    with col_export:
+        if st.session_state.ui_messages:
+            md_content = format_chat_as_markdown(
+                messages=st.session_state.ui_messages,
+                session_title=(f"Chat-{st.session_state.current_session_id[:8]}"),
+            )
+
+            st.download_button(
+                label="📥 Export Chat",
+                data=md_content,
+                file_name=(
+                    f"rag_conversation_" f"{st.session_state.current_session_id[:8]}.md"
+                ),
+                mime="text/markdown",
+                use_container_width=True,
+                key="export_chat_button",
+            )
+        else:
+            # Keep toolbar alignment when there are no messages
+            st.button(
+                "📥 Export Chat",
+                disabled=True,
+                use_container_width=True,
+                key="export_chat_disabled",
+            )
 
     st.divider()
 
@@ -336,14 +376,32 @@ with main_chat_col:
                             unsafe_allow_html=True,
                         )
 
-    # 6. Handle User Chat Input
-    if user_query := st.chat_input("Ask a question about your uploaded document..."):
-        current_sid = st.session_state.current_session_id
+# 6. Handle User Chat Input
 
-        if not st.session_state.ui_messages:
-            auto_title = generate_chat_title(user_query, get_llm())
-            session_store.create_session(current_sid, title=auto_title)
+st.markdown(
+    """
+    <style>
+    div[data-testid="stChatInput"] {
+        width: 75%;
+        max-width: none;
+        margin-left: auto;
+        margin-right: auto;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
+if user_query := st.chat_input(
+    "Ask a question about your uploaded document...",
+):
+    current_sid = st.session_state.current_session_id
+
+    if not st.session_state.ui_messages:
+        auto_title = generate_chat_title(user_query, get_llm())
+        session_store.create_session(current_sid, title=auto_title)
+
+    with main_chat_col:
         st.chat_message("user").markdown(user_query)
         st.session_state.ui_messages.append({"role": "user", "content": user_query})
         session_store.save_messages(current_sid, role="user", content=user_query)
@@ -364,6 +422,7 @@ with main_chat_col:
 
                 retrieved_sources = []
                 grounding_info = {}
+                diagnostics_info = {}
 
                 def token_generator():
                     cleared_loader = False
@@ -379,6 +438,8 @@ with main_chat_col:
                             retrieved_sources.extend(chunk.get("content", []))
                         elif chunk_type == "grounding":
                             grounding_info.update(chunk.get("content", {}))
+                        elif chunk_type == "diagnostics":
+                            diagnostics_info.update(chunk.get("content", {}))
                         elif chunk_type == "summary":
                             st.session_state.running_summary = chunk.get("content", "")
 
@@ -394,6 +455,29 @@ with main_chat_col:
                         st.caption(
                             f"⚠️ Grounding Confidence: **{int(score * 100)}%** (Some claims could not be verified)"
                         )
+
+                if diagnostics_info:
+                    with st.expander("⚡ Execution Diagnostics", expanded=False):
+                        d_col1, d_col2, d_col3 = st.columns(3)
+                        d_col1.metric(
+                            "Total Latency",
+                            f"{diagnostics_info.get('total_time_sec', 0)}s",
+                        )
+                        d_col2.metric(
+                            "Retrieval Duration",
+                            f"{diagnostics_info.get('retrieval_time_sec', 0)}s",
+                        )
+                        d_col3.metric(
+                            "Chunks Evaluated",
+                            diagnostics_info.get("chunks_retrieved", 0),
+                        )
+
+                        if diagnostics_info.get("is_web_fallback"):
+                            st.info("🌐 Mode: Corrective Web Search Fallback Triggered")
+                        elif diagnostics_info.get("cached"):
+                            st.success("⚡ Mode: Semantic Cache Hit")
+                        else:
+                            st.success("📚 Mode: Local Parent-Document Hybrid Search")
 
                 sources_data = []
                 for doc in retrieved_sources:

@@ -1,4 +1,4 @@
-# app/src/query.py
+import time
 from pathlib import Path
 from typing import Union, Generator, Tuple
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
@@ -73,6 +73,7 @@ def answer_question(
 ) -> Union[dict, Generator[dict, None, None]]:
 
     llm = get_llm()
+    start_time = time.perf_counter()
     chat_history = chat_history or []
 
     # 1. Context Window Compression
@@ -163,6 +164,7 @@ def answer_question(
 
     # 5. Retrieval & Reranking Pipeline
     dense_pdr, sparse_pdr, compressor = initialize_retrievers(db_path, selected_file)
+    retrieval_start = time.perf_counter()
     retrieved_docs = execute_multi_query_retrieval(
         standalone_query=standalone_query,
         selected_file=selected_file,
@@ -171,6 +173,7 @@ def answer_question(
         compressor=compressor,
         llm=llm,
     )
+    retrieval_duration = time.perf_counter() - retrieval_start
 
     # 6. CRAG & Web Fallback
     active_docs, is_web_fallback = evaluate_and_fallback(
@@ -240,6 +243,15 @@ def answer_question(
                     accumulated.append(token)
                     yield {"type": "token", "content": token}
 
+            total_duration = time.perf_counter() - start_time
+            diagnostics = {
+                "total_time_sec": round(total_duration, 2),
+                "retrieval_time_sec": round(retrieval_duration, 2),
+                "chunks_retrieved": len(active_docs),
+                "is_web_fallback": is_web_fallback,
+                "cached": False,
+            }
+
             raw_answer = "".join(accumulated)
 
             # Post-generation grounding check (only for document retrieval, not web fallback)
@@ -253,6 +265,7 @@ def answer_question(
 
             yield {"type": "sources", "content": active_docs}
             yield {"type": "grounding", "content": grounding_meta}
+            yield {"type": "diagnostics", "content": diagnostics}
             yield {"type": "summary", "content": updated_summary}
 
             semantic_cache.store(
