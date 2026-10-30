@@ -1,6 +1,7 @@
 import time
 import base64
 import pymupdf
+import hashlib
 from pathlib import Path
 from langchain_community.document_loaders import PyMuPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -83,6 +84,8 @@ def process_pdf_and_ingest(
 
     display_name = filename_override if filename_override else pdf_path.name
 
+    pdf_hash = compute_file_hash(pdf_path)
+
     print(f"📄 Loading PDF: {pdf_path}...")
     loader = PyMuPDFLoader(str(pdf_path))
     documents = loader.load()
@@ -123,6 +126,7 @@ def process_pdf_and_ingest(
     # Normalize metadata
     for doc in documents:
         doc.metadata["source_file"] = display_name
+        doc.metadata["file_hash"] = pdf_hash
 
     # Define Splitters
     parent_splitter = RecursiveCharacterTextSplitter(chunk_size=1500, chunk_overlap=150)
@@ -146,6 +150,7 @@ def process_pdf_and_ingest(
         for c_doc in sub_docs:
             c_doc.metadata[parent_id_key] = parent_id
             c_doc.metadata["source_file"] = display_name
+            c_doc.metadata["file_hash"] = pdf_hash
             child_docs.append(c_doc)
 
     print(
@@ -246,3 +251,81 @@ def get_indexed_documents(db_path: str | Path = DB_PATH) -> list[str]:
     except Exception as e:
         print(f"Error fetching documents: {e}")
         return []
+
+
+# Computes a SHA-256 hash for raw bytes or a file path.
+def compute_file_hash(file_bytes_or_path: bytes | Path | str) -> str:
+    hasher = hashlib.sha256()
+    if isinstance(file_bytes_or_path, bytes):
+        hasher.update(file_bytes_or_path)
+    else:
+        with open(file_bytes_or_path, "rb") as f:
+            while chunk := f.read(8192):
+                hasher.update(chunk)
+    return hasher.hexdigest()
+
+
+# Returns a mapping of {file_hash: source_file_name} from ChromaDB metadata.
+def get_indexed_file_hashes(db_path: str | Path = DB_PATH) -> dict[str, str]:
+    db_path = Path(db_path)
+    chroma_path = db_path / "chroma"
+    if not chroma_path.exists():
+        return {}
+
+    try:
+        vector_db = Chroma(
+            collection_name="child_chunks",
+            persist_directory=str(chroma_path),
+            embedding_function=get_embeddings(),
+        )
+        data = vector_db.get(include=["metadatas"])
+        metadatas = data.get("metadatas", [])
+        hash_to_file = {}
+        for meta in metadatas:
+            if meta and "file_hash" in meta and "source_file" in meta:
+                hash_to_file[meta["file_hash"]] = meta["source_file"]
+        return hash_to_file
+    except Exception as e:
+        print(f"Error fetching hashes: {e}")
+        return {}
+
+
+# Completely removes a document:
+# 1. Removes all child chunks from ChromaDB.
+# 2. Drops indexing keys from SQLRecordManager.
+# 3. Cleans parent documents from LocalFileStore.
+def delete_document_from_index(filename: str, db_path: str | Path = DB_PATH):
+    db_path = Path(db_path)
+    chroma_path = db_path / "chroma"
+
+    # Delete chunks from ChromaDB
+    if chroma_path.exists():
+        vector_db = Chroma(
+            collection_name="child_chunks",
+            persist_directory=str(chroma_path),
+            embedding_function=get_embeddings(),
+        )
+        vector_db.delete(where={"source_file": filename})
+
+    # Delete keys from SQLRecordManager
+    try:
+        record_manager = SQLRecordManager(
+            f"chroma/{filename}",
+            db_url=f"sqlite:///{db_path}/record_manager.db",
+        )
+        record_manager.create_schema()
+
+        keys = record_manager.list_keys()
+        if keys:
+            record_manager.delete_keys(keys)
+    except Exception as e:
+        print(f"Warning cleaning record manager for {filename}: {e}")
+
+    # Clean parent docs from LocalFileStore doc_store
+    doc_store_path = db_path / "doc_store"
+    if doc_store_path.exists():
+        fs = LocalFileStore(str(doc_store_path))
+        store = create_kv_docstore(fs)
+        matching_keys = [k for k in store.yield_keys(prefix=f"{filename}_parent_")]
+        if matching_keys:
+            store.mdelete(matching_keys)
