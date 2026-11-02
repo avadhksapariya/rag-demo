@@ -10,6 +10,7 @@ from app.storage.session_store import session_store, generate_chat_title
 from app.src.query import answer_question
 from app.src.retrieval.highlighter import extract_highlighted_snippet
 from app.utils.typing_dots import TYPING_DOTS_LOADER_HTML
+from app.utils.copy_btn import render_copy_button
 
 from app.ui.citations import render_citations
 from app.ui.sidebar_history import render_conversation_tab
@@ -117,22 +118,51 @@ with main_chat_col:
                 msg["role"] == "assistant"
                 and msg_idx == len(st.session_state.ui_messages) - 1
             )
-            if is_latest_assistant:
-                if st.button(
-                    "🔄 Retry",
-                    key=f"retry_{msg_idx}",
-                    type="tertiary",
-                    help="Regenerate this answer",
-                ):
-                    # Pop assistant response and corresponding user query
-                    st.session_state.ui_messages.pop()
-                    last_user = st.session_state.ui_messages.pop()
 
-                    st.session_state.chat_history.pop()  # Pop AIMessage
-                    st.session_state.chat_history.pop()  # Pop HumanMessage
+            # --- ACTION BAR: Retry & Copy ---
+            is_latest_assistant = (
+                msg["role"] == "assistant"
+                and msg_idx == len(st.session_state.ui_messages) - 1
+            )
 
-                    st.session_state.retry_query = last_user["content"]
-                    st.rerun()
+            if msg["role"] == "assistant":
+                st.markdown(
+                    """
+                    <style>
+                    div[data-testid="stHorizontalBlock"]:has(iframe) {
+                        align-items: center !important;
+                    }
+                    div[data-testid="stHorizontalBlock"]:has(iframe) iframe {
+                        margin-top: 2px !important;
+                    }
+                    </style>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+                col_copy, col_retry, col_spacer = st.columns(
+                    [0.12, 0.12, 0.76], vertical_alignment="center"
+                )
+
+                with col_copy:
+                    render_copy_button(
+                        text_to_copy=msg["content"], key_suffix=f"msg_{msg_idx}"
+                    )
+
+                with col_retry:
+                    if is_latest_assistant:
+                        if st.button(
+                            "🔄 Retry",
+                            key=f"retry_{msg_idx}",
+                            type="tertiary",
+                            help="Regenerate this answer",
+                        ):
+                            st.session_state.ui_messages.pop()
+                            last_user = st.session_state.ui_messages.pop()
+                            st.session_state.chat_history.pop()
+                            st.session_state.chat_history.pop()
+                            st.session_state.retry_query = last_user["content"]
+                            st.rerun()
 
 # Chat Input Styling
 st.markdown(
