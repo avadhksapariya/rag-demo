@@ -61,6 +61,9 @@ if "last_ingested_message" not in st.session_state:
 if "show_success_counter" not in st.session_state:
     st.session_state.show_success_counter = 0
 
+if "retry_query" not in st.session_state:
+    st.session_state.retry_query = None
+
 # 3. Sidebar
 with st.sidebar:
     st.subheader("📚 Retrieval-Augmented Generation")
@@ -90,8 +93,46 @@ with main_chat_col:
                 )
                 st.caption(caption)
 
+            if msg.get("diagnostics"):
+                diag = msg["diagnostics"]
+                with st.expander("⚡ Execution Diagnostics", expanded=False):
+                    d_col1, d_col2, d_col3 = st.columns(3)
+                    d_col1.metric("Total Latency", f"{diag.get('total_time_sec', 0)}s")
+                    d_col2.metric(
+                        "Retrieval Duration", f"{diag.get('retrieval_time_sec', 0)}s"
+                    )
+                    d_col3.metric("Chunks Evaluated", diag.get("chunks_retrieved", 0))
+
+                    if diag.get("is_web_fallback"):
+                        st.info("🌐 Mode: Corrective Web Search Fallback Triggered")
+                    elif diag.get("cached"):
+                        st.success("⚡ Mode: Semantic Cache Hit")
+                    else:
+                        st.success("📚 Mode: Local Parent-Document Hybrid Search")
+
             if msg.get("sources"):
                 render_citations(msg["sources"], unique_prefix=f"hist_{msg_idx}")
+
+            is_latest_assistant = (
+                msg["role"] == "assistant"
+                and msg_idx == len(st.session_state.ui_messages) - 1
+            )
+            if is_latest_assistant:
+                if st.button(
+                    "🔄 Retry",
+                    key=f"retry_{msg_idx}",
+                    type="tertiary",
+                    help="Regenerate this answer",
+                ):
+                    # Pop assistant response and corresponding user query
+                    st.session_state.ui_messages.pop()
+                    last_user = st.session_state.ui_messages.pop()
+
+                    st.session_state.chat_history.pop()  # Pop AIMessage
+                    st.session_state.chat_history.pop()  # Pop HumanMessage
+
+                    st.session_state.retry_query = last_user["content"]
+                    st.rerun()
 
 # Chat Input Styling
 st.markdown(
@@ -109,7 +150,13 @@ st.markdown(
 )
 
 # 6. Live Chat Input Handling
-if user_query := st.chat_input("Ask a question about your uploaded document..."):
+user_input = st.chat_input("Ask a question about your uploaded document...")
+active_query = user_input or st.session_state.get("retry_query")
+
+if active_query:
+    user_query = active_query
+    st.session_state.retry_query = None
+
     current_sid = st.session_state.current_session_id
 
     if not st.session_state.ui_messages:
@@ -119,6 +166,7 @@ if user_query := st.chat_input("Ask a question about your uploaded document...")
     with main_chat_col:
         st.chat_message("user").markdown(user_query)
         st.session_state.ui_messages.append({"role": "user", "content": user_query})
+        st.session_state.chat_history.append(HumanMessage(content=user_query))
         session_store.save_messages(current_sid, role="user", content=user_query)
 
         with st.chat_message("assistant"):
@@ -158,49 +206,15 @@ if user_query := st.chat_input("Ask a question about your uploaded document...")
 
                 answer_text = st.write_stream(token_generator())
 
-                if grounding_info:
-                    score = grounding_info.get("score", 1.0)
-                    caption = (
-                        f"🛡️ Grounding Confidence: **{int(score * 100)}%** (Factually verified)"
-                        if score >= 0.8
-                        else f"⚠️ Grounding Confidence: **{int(score * 100)}%** (Some claims could not be verified)"
-                    )
-                    st.caption(caption)
-
-                if diagnostics_info:
-                    with st.expander("⚡ Execution Diagnostics", expanded=False):
-                        d_col1, d_col2, d_col3 = st.columns(3)
-                        d_col1.metric(
-                            "Total Latency",
-                            f"{diagnostics_info.get('total_time_sec', 0)}s",
-                        )
-                        d_col2.metric(
-                            "Retrieval Duration",
-                            f"{diagnostics_info.get('retrieval_time_sec', 0)}s",
-                        )
-                        d_col3.metric(
-                            "Chunks Evaluated",
-                            diagnostics_info.get("chunks_retrieved", 0),
-                        )
-
-                        if diagnostics_info.get("is_web_fallback"):
-                            st.info("🌐 Mode: Corrective Web Search Fallback Triggered")
-                        elif diagnostics_info.get("cached"):
-                            st.success("⚡ Mode: Semantic Cache Hit")
-                        else:
-                            st.success("📚 Mode: Local Parent-Document Hybrid Search")
-
                 sources_data = []
                 for doc in retrieved_sources:
                     page = doc.metadata.get("page", 0) + 1
                     file_name = doc.metadata.get("source_file", "Document")
-
                     snippet_text = extract_highlighted_snippet(
                         doc_text=doc.page_content,
                         query=user_query,
                         max_sentences=2,
                     )
-
                     sources_data.append(
                         {
                             "file": file_name,
@@ -209,10 +223,6 @@ if user_query := st.chat_input("Ask a question about your uploaded document...")
                         }
                     )
 
-                # Renders with the identical Eye button and modal trigger
-                if sources_data:
-                    render_citations(sources_data, unique_prefix="live_turn")
-
                 # Persist turn
                 st.session_state.ui_messages.append(
                     {
@@ -220,15 +230,16 @@ if user_query := st.chat_input("Ask a question about your uploaded document...")
                         "content": answer_text,
                         "sources": sources_data,
                         "grounding": grounding_info,
+                        "diagnostics": diagnostics_info,
                     }
                 )
-
-                st.session_state.chat_history.append(HumanMessage(content=user_query))
                 st.session_state.chat_history.append(AIMessage(content=answer_text))
-
                 session_store.save_messages(
                     current_sid, role="assistant", content=answer_text
                 )
+
+                # Rerun so Section 5 mounts completed turn with Retry button & expanders
+                st.rerun()
 
             except Exception as e:
                 st.error(f"❌ Error generating response: {e}")
