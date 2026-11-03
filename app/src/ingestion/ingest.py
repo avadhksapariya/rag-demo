@@ -1,4 +1,5 @@
 import time
+import json
 import base64
 import pymupdf
 import hashlib
@@ -164,6 +165,12 @@ def process_pdf_and_ingest(
     store = create_kv_docstore(fs)
     store.mset(list(parent_records.items()))
 
+    # Combine the first few pages as representative context
+    intro_sample = "\n".join([d.page_content for d in documents[:3]])
+    generate_and_cache_document_prompts(
+        filename=display_name, sample_text=intro_sample, db_path=db_path
+    )
+
     # Initialize Embeddings & Vector Store
     embeddings = get_embeddings()  # GoogleGenerativeAIEmbeddings(model=EMBEDDING_MODEL)
     chroma_path = db_path / "chroma"
@@ -223,6 +230,54 @@ def process_pdf_and_ingest(
     print(f"✅ Vector database created successfully at '{db_path}'.\n")
 
     return indexing_result
+
+
+def generate_and_cache_document_prompts(
+    filename: str, sample_text: str, db_path: str | Path = DB_PATH
+) -> list[str]:
+    try:
+        llm = get_llm()
+        prompt = (
+            "Analyze the following document extract and generate exactly 4 short, insightful, "
+            "and distinct questions that a user would likely ask about this specific document.\n"
+            "Requirements:\n"
+            "- Focus on concrete topics, names, or key themes found directly in the text.\n"
+            "- Keep each question under 12 words.\n"
+            "- Return strictly a raw JSON array of 4 strings with no markdown fencing or commentary.\n\n"
+            f"Document Extract:\n{sample_text[:3500]}"
+        )
+        response = llm.invoke([HumanMessage(content=prompt)])
+        cleaned = response.content.strip().strip("`").replace("json\n", "").strip()
+        prompts = json.loads(cleaned)
+
+        if isinstance(prompts, list) and len(prompts) >= 4:
+            prompts = prompts[:4]
+        else:
+            raise ValueError("Invalid format from LLM")
+    except Exception as e:
+        print(f"⚠️ Could not generate dynamic prompts for {filename}: {e}")
+        prompts = [
+            f"What are the key points covered in {filename}?",
+            f"Summarize the background and core events in {filename}.",
+            f"What are the main findings or outcomes described?",
+            f"List the notable figures or entities mentioned.",
+        ]
+
+    registry_file = Path(db_path) / "document_prompts.json"
+    registry = {}
+
+    if registry_file.exists():
+        try:
+            with open(registry_file, "r", encoding="utf-8") as f:
+                registry = json.load(f)
+        except Exception:
+            registry = {}
+
+    registry[filename] = prompts
+    with open(registry_file, "w", encoding="utf-8") as f:
+        json.dump(registry, f, indent=2, ensure_ascii=False)
+
+    return prompts
 
 
 # Retrieves a list of all unique file names indexed in ChromaDB.
@@ -329,3 +384,16 @@ def delete_document_from_index(filename: str, db_path: str | Path = DB_PATH):
         matching_keys = [k for k in store.yield_keys(prefix=f"{filename}_parent_")]
         if matching_keys:
             store.mdelete(matching_keys)
+
+    # Remove from cached prompts registry
+    registry_file = Path(db_path) / "document_prompts.json"
+    if registry_file.exists():
+        try:
+            with open(registry_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if filename in data:
+                del data[filename]
+                with open(registry_file, "w", encoding="utf-8") as f:
+                    json.dump(data, f, indent=2)
+        except Exception:
+            pass

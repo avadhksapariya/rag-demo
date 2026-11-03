@@ -11,6 +11,7 @@ from app.src.query import answer_question
 from app.src.retrieval.highlighter import extract_highlighted_snippet
 from app.utils.typing_dots import TYPING_DOTS_LOADER_HTML
 from app.utils.copy_btn import render_copy_button
+from app.utils.chat_suggestions import render_starter_prompts
 
 from app.ui.citations import render_citations
 from app.ui.sidebar_history import render_conversation_tab
@@ -80,89 +81,97 @@ left_pad, main_chat_col, right_pad = st.columns([1, 6, 1])
 with main_chat_col:
     render_chat_toolbar()
 
-    # 5. Display Existing Chat Messages
-    for msg_idx, msg in enumerate(st.session_state.ui_messages):
-        with st.chat_message(msg["role"]):
-            st.markdown(msg["content"])
+    if not st.session_state.ui_messages:
+        render_starter_prompts()
+    else:
+        # 5. Display Existing Chat Messages
+        for msg_idx, msg in enumerate(st.session_state.ui_messages):
+            with st.chat_message(msg["role"]):
+                st.markdown(msg["content"])
 
-            if msg.get("grounding"):
-                score = msg["grounding"].get("score", 1.0)
-                caption = (
-                    f"🛡️ Grounding Confidence: **{int(score * 100)}%** (Factually verified)"
-                    if score >= 0.8
-                    else f"⚠️ Grounding Confidence: **{int(score * 100)}%** (Some claims could not be verified)"
-                )
-                st.caption(caption)
-
-            if msg.get("diagnostics"):
-                diag = msg["diagnostics"]
-                with st.expander("⚡ Execution Diagnostics", expanded=False):
-                    d_col1, d_col2, d_col3 = st.columns(3)
-                    d_col1.metric("Total Latency", f"{diag.get('total_time_sec', 0)}s")
-                    d_col2.metric(
-                        "Retrieval Duration", f"{diag.get('retrieval_time_sec', 0)}s"
+                if msg.get("grounding"):
+                    score = msg["grounding"].get("score", 1.0)
+                    caption = (
+                        f"🛡️ Grounding Confidence: **{int(score * 100)}%** (Factually verified)"
+                        if score >= 0.8
+                        else f"⚠️ Grounding Confidence: **{int(score * 100)}%** (Some claims could not be verified)"
                     )
-                    d_col3.metric("Chunks Evaluated", diag.get("chunks_retrieved", 0))
+                    st.caption(caption)
 
-                    if diag.get("is_web_fallback"):
-                        st.info("🌐 Mode: Corrective Web Search Fallback Triggered")
-                    elif diag.get("cached"):
-                        st.success("⚡ Mode: Semantic Cache Hit")
-                    else:
-                        st.success("📚 Mode: Local Parent-Document Hybrid Search")
+                if msg.get("diagnostics"):
+                    diag = msg["diagnostics"]
+                    with st.expander("⚡ Execution Diagnostics", expanded=False):
+                        d_col1, d_col2, d_col3 = st.columns(3)
+                        d_col1.metric(
+                            "Total Latency", f"{diag.get('total_time_sec', 0)}s"
+                        )
+                        d_col2.metric(
+                            "Retrieval Duration",
+                            f"{diag.get('retrieval_time_sec', 0)}s",
+                        )
+                        d_col3.metric(
+                            "Chunks Evaluated", diag.get("chunks_retrieved", 0)
+                        )
 
-            if msg.get("sources"):
-                render_citations(msg["sources"], unique_prefix=f"hist_{msg_idx}")
+                        if diag.get("is_web_fallback"):
+                            st.info("🌐 Mode: Corrective Web Search Fallback Triggered")
+                        elif diag.get("cached"):
+                            st.success("⚡ Mode: Semantic Cache Hit")
+                        else:
+                            st.success("📚 Mode: Local Parent-Document Hybrid Search")
 
-            is_latest_assistant = (
-                msg["role"] == "assistant"
-                and msg_idx == len(st.session_state.ui_messages) - 1
-            )
+                if msg.get("sources"):
+                    render_citations(msg["sources"], unique_prefix=f"hist_{msg_idx}")
 
-            # --- ACTION BAR: Retry & Copy ---
-            is_latest_assistant = (
-                msg["role"] == "assistant"
-                and msg_idx == len(st.session_state.ui_messages) - 1
-            )
-
-            if msg["role"] == "assistant":
-                st.markdown(
-                    """
-                    <style>
-                    div[data-testid="stHorizontalBlock"]:has(iframe) {
-                        align-items: center !important;
-                    }
-                    div[data-testid="stHorizontalBlock"]:has(iframe) iframe {
-                        margin-top: 2px !important;
-                    }
-                    </style>
-                    """,
-                    unsafe_allow_html=True,
+                is_latest_assistant = (
+                    msg["role"] == "assistant"
+                    and msg_idx == len(st.session_state.ui_messages) - 1
                 )
 
-                col_copy, col_retry, col_spacer = st.columns(
-                    [0.12, 0.12, 0.76], vertical_alignment="center"
+                # --- ACTION BAR: Retry & Copy ---
+                is_latest_assistant = (
+                    msg["role"] == "assistant"
+                    and msg_idx == len(st.session_state.ui_messages) - 1
                 )
 
-                with col_copy:
-                    render_copy_button(
-                        text_to_copy=msg["content"], key_suffix=f"msg_{msg_idx}"
+                if msg["role"] == "assistant":
+                    st.markdown(
+                        """
+                        <style>
+                        div[data-testid="stHorizontalBlock"]:has(iframe) {
+                            align-items: center !important;
+                        }
+                        div[data-testid="stHorizontalBlock"]:has(iframe) iframe {
+                            margin-top: 2px !important;
+                        }
+                        </style>
+                        """,
+                        unsafe_allow_html=True,
                     )
 
-                with col_retry:
-                    if is_latest_assistant:
-                        if st.button(
-                            "🔄 Retry",
-                            key=f"retry_{msg_idx}",
-                            type="tertiary",
-                            help="Regenerate this answer",
-                        ):
-                            st.session_state.ui_messages.pop()
-                            last_user = st.session_state.ui_messages.pop()
-                            st.session_state.chat_history.pop()
-                            st.session_state.chat_history.pop()
-                            st.session_state.retry_query = last_user["content"]
-                            st.rerun()
+                    col_copy, col_retry, col_spacer = st.columns(
+                        [0.12, 0.12, 0.76], vertical_alignment="center"
+                    )
+
+                    with col_copy:
+                        render_copy_button(
+                            text_to_copy=msg["content"], key_suffix=f"msg_{msg_idx}"
+                        )
+
+                    with col_retry:
+                        if is_latest_assistant:
+                            if st.button(
+                                "🔄 Retry",
+                                key=f"retry_{msg_idx}",
+                                type="tertiary",
+                                help="Regenerate this answer",
+                            ):
+                                st.session_state.ui_messages.pop()
+                                last_user = st.session_state.ui_messages.pop()
+                                st.session_state.chat_history.pop()
+                                st.session_state.chat_history.pop()
+                                st.session_state.retry_query = last_user["content"]
+                                st.rerun()
 
 # Chat Input Styling
 st.markdown(
