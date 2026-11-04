@@ -89,4 +89,11 @@ def reciprocal_rank_fusion(
     sorted_keys = sorted(
         fusion_scores.keys(), key=lambda k: fusion_scores[k], reverse=True
     )
-    return [doc_lookup[k] for k in sorted_keys[:top_n]]
+
+    fused_docs = []
+    for k in sorted_keys[:top_n]:
+        doc = doc_lookup[k]
+        doc.metadata["rrf_score"] = float(fusion_scores[k])
+        fused_docs.append(doc)
+
+    return fused_docs

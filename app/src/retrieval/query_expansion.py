@@ -41,8 +41,7 @@ def generate_multi_queries(primary_query: str, llm) -> List[str]:
 
 
 def deduplicate_documents(documents: List[Document]) -> List[Document]:
-    seen_identifiers = set()
-    unique_docs = []
+    best_docs: dict[str, Document] = {}
 
     for doc in documents:
         doc_id = doc.metadata.get("doc_id") or doc.metadata.get("source_id")
@@ -52,8 +51,12 @@ def deduplicate_documents(documents: List[Document]) -> List[Document]:
             content_snippet = doc.page_content[:100]
             doc_id = f"{source}_{page}_{content_snippet}"
 
-        if doc_id not in seen_identifiers:
-            seen_identifiers.add(doc_id)
-            unique_docs.append(doc)
+        if doc_id not in best_docs:
+            best_docs[doc_id] = doc
+        else:
+            current_best_score = best_docs[doc_id].metadata.get("rrf_score", 0.0)
+            new_score = doc.metadata.get("rrf_score", 0.0)
+            if new_score > current_best_score:
+                best_docs[doc_id] = doc
 
-    return unique_docs
+    return list(best_docs.values())

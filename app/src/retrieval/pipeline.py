@@ -69,6 +69,15 @@ def initialize_retrievers(db_path: Path, selected_file: str | None = None):
     return dense_pdr, sparse_pdr, compressor
 
 
+# Creates a consistent unique key for tracking chunks across retrievers.
+def _get_doc_key(doc: Document) -> str:
+    return (
+        doc.metadata.get("chunk_id")
+        or doc.metadata.get("doc_id")
+        or f"{doc.metadata.get('source_file', 'unknown')}_p{doc.metadata.get('page', 0)}"
+    )
+
+
 # Generates sub-queries, executes hybrid retrieval across branches, deduplicates, reranks, and budgets tokens.
 def execute_multi_query_retrieval(
     standalone_query: str,
@@ -77,14 +86,29 @@ def execute_multi_query_retrieval(
     sparse_pdr: ParentBM25Retriever,
     compressor: FlashrankRerank,
     llm,
-) -> List[Document]:
+) -> Tuple[List[Document], List[dict]]:
     retrieval_queries = generate_multi_queries(standalone_query, llm)
     print(f"🔀 [Multi-Query Expansion]: Sub-queries: {retrieval_queries}")
 
     all_hybrid_candidates = []
+    best_dense_ranks: dict[str, int] = {}
+    best_sparse_ranks: dict[str, int] = {}
+
     for q in retrieval_queries:
         dense_hits = dense_pdr.invoke(q)
         sparse_hits = sparse_pdr.invoke(q, selected_file=selected_file)
+
+        # Track the best (lowest numerical) rank for each document across queries
+        for rank, d in enumerate(dense_hits, start=1):
+            key = _get_doc_key(d)
+            if key not in best_dense_ranks or rank < best_dense_ranks[key]:
+                best_dense_ranks[key] = rank
+
+        for rank, d in enumerate(sparse_hits, start=1):
+            key = _get_doc_key(d)
+            if key not in best_sparse_ranks or rank < best_sparse_ranks[key]:
+                best_sparse_ranks[key] = rank
+
         fused = reciprocal_rank_fusion(
             dense_docs=dense_hits,
             sparse_docs=sparse_hits,
@@ -105,12 +129,36 @@ def execute_multi_query_retrieval(
         documents=deduped_candidates, query=standalone_query
     )
 
+    # Build scorecard trace from the evaluated candidates
+    candidate_trace = []
+    for d in reranked:
+        key = _get_doc_key(d)
+        file_name = Path(d.metadata.get("source_file", "doc")).name
+        page_no = d.metadata.get("page", 0) + 1
+        label = f"{file_name} (p. {page_no})"
+
+        # Flashrank stores score in metadata['score'] or metadata['relevance_score']
+        flashrank_score = d.metadata.get("score") or d.metadata.get(
+            "relevance_score", 0.0
+        )
+        rrf_score = d.metadata.get("rrf_score", 0.0)
+
+        candidate_trace.append(
+            {
+                "rrf_score": label,
+                "bm25_rank": best_sparse_ranks.get(key),
+                "vector_rank": best_dense_ranks.get(key),
+                "rrf_score": round(float(rrf_score), 4),
+                "rerank_score": round(float(flashrank_score), 2),
+            }
+        )
+
     # Dynamic token budgeting (cap at 2500 context tokens)
     budgeted_docs, used_tokens = trim_documents_to_budget(reranked, max_tokens=2500)
     print(
         f"📦 [Context Budget]: Packed {len(budgeted_docs)} chunk(s) totaling ~{used_tokens} tokens."
     )
-    return budgeted_docs
+    return budgeted_docs, candidate_trace
 
 
 # CRAG: Evaluates retrieved document relevance; falls back to DuckDuckGo if insufficient.

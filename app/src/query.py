@@ -165,7 +165,8 @@ def answer_question(
     # 5. Retrieval & Reranking Pipeline
     dense_pdr, sparse_pdr, compressor = initialize_retrievers(db_path, selected_file)
     retrieval_start = time.perf_counter()
-    retrieved_docs = execute_multi_query_retrieval(
+
+    retrieved_docs, candidate_trace = execute_multi_query_retrieval(
         standalone_query=standalone_query,
         selected_file=selected_file,
         dense_pdr=dense_pdr,
@@ -250,6 +251,7 @@ def answer_question(
                 "chunks_retrieved": len(active_docs),
                 "is_web_fallback": is_web_fallback,
                 "cached": False,
+                "candidates": candidate_trace,
             }
 
             raw_answer = "".join(accumulated)
@@ -311,4 +313,12 @@ def answer_question(
         "context": active_docs,
         "grounding": grounding_meta,
         "summary": updated_summary,
+        "diagnostics": {
+            "total_time_sec": round(time.perf_counter() - start_time, 2),
+            "retrieval_time_sec": round(retrieval_duration, 2),
+            "chunks_retrieved": len(active_docs),
+            "is_web_fallback": is_web_fallback,
+            "cached": False,
+            "candidates": candidate_trace,
+        },
     }

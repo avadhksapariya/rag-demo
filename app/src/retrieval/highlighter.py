@@ -21,8 +21,13 @@ def extract_highlighted_snippet(
 
     sentences = _split_into_sentence(doc_text)
     if len(sentences) <= 1:
-        # If single sentence or very short, highlight the first meaningful segment
-        return f"<mark>{doc_text[:200]}</mark>..."
+        return (
+            f"<span style='text-decoration: underline; "
+            f"text-decoration-color: #b2bec3; "
+            f"text-decoration-thickness: 1px; "
+            f"text-underline-offset: 3px;'>"
+            f"{doc_text[:200]}</span>..."
+        )
 
     tokenized_corpus = [re.findall(r"\w+", s.lower()) for s in sentences]
     tokenized_query = re.findall(r"\w+", query.lower())

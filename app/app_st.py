@@ -120,6 +120,43 @@ with main_chat_col:
                         else:
                             st.success("📚 Mode: Local Parent-Document Hybrid Search")
 
+                        # Scorecard Table
+                        candidates = diag.get("candidates", [])
+                        if candidates:
+                            st.markdown(
+                                """
+                            <div style="font-size: 0.85em; font-weight: 600; color: #8892b0; margin: 12px 0 6px 0;">
+                                🎯 RETRIEVAL & RERANK SCORECARD
+                            </div>
+                            """,
+                                unsafe_allow_html=True,
+                            )
+                            st.dataframe(
+                                candidates,
+                                column_config={
+                                    "chunk_id": st.column_config.TextColumn(
+                                        "Candidate Source"
+                                    ),
+                                    "bm25_rank": st.column_config.NumberColumn(
+                                        "BM25 Rank", format="#%d"
+                                    ),
+                                    "vector_rank": st.column_config.NumberColumn(
+                                        "Vector Rank", format="#%d"
+                                    ),
+                                    "rrf_score": st.column_config.NumberColumn(
+                                        "RRF Score", format="%.4f"
+                                    ),
+                                    "rerank_score": st.column_config.ProgressColumn(
+                                        "FlashRank Confidence",
+                                        min_value=0.0,
+                                        max_value=1.0,
+                                        format="%.2f",
+                                    ),
+                                },
+                                hide_index=True,
+                                use_container_width=True,
+                            )
+
                 if msg.get("sources"):
                     render_citations(msg["sources"], unique_prefix=f"hist_{msg_idx}")
 
