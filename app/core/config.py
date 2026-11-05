@@ -21,6 +21,13 @@ EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"  # to ingest and quer
 OPENROUTER_FREE_MODEL = "openrouter/free"
 GEMINI_LLM_MODEL = "gemini-3.6-flash"
 
+# Pricing rates per 1 Million Tokens (for cost calculation)
+# OpenRouter Free = $0.00 | Gemini Flash rates as fallback estimation
+PRICING_PER_1M = {
+    "openrouter/free": {"prompt": 0.0, "completion": 0.0},
+    "gemini": {"prompt": 0.075, "completion": 0.30},
+}
+
 # Root-level paths
 DB_PATH = PROJECT_ROOT / "vector_db"
 LOCAL_DB_PATH = PROJECT_ROOT / "local_db"
@@ -57,6 +64,7 @@ def get_llm():
             "X-Title": "Zigzek AI",  # RAG Demo
         },
         max_retries=1,
+        stream_usage=True,
     )
 
     # LangChain automatic failover

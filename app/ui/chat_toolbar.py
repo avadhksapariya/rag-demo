@@ -53,6 +53,9 @@ def render_chat_toolbar():
     # Resolve current active session title
     raw_sessions = session_store.list_sessions()
     current_title = "New Chat"
+
+    session_tokens = 0
+
     for s in raw_sessions:
         if s["id"] == st.session_state.current_session_id:
             current_title = s["title"]
@@ -66,6 +69,22 @@ def render_chat_toolbar():
         """,
         unsafe_allow_html=True,
     )
+
+    for m in st.session_state.get("ui_messages", []):
+        if m.get("role") == "assistant":
+            usage = m.get("diagnostics", {}).get("usage", {})
+            session_tokens += usage.get("total_tokens", 0)
+
+    if session_tokens > 0:
+        st.markdown(
+            f"""
+            <div style="text-align: right; font-size: 0.78em; color: #8892b0; margin-top: 4px;">
+                Session Total: <span style="color: #fafafa; font-weight: 500;">{session_tokens:,} tokens</span> 
+                <span style="color: #2ed573;">(Free Tier Active)</span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
     col_scope, col_clear, col_export = st.columns(
         [0.38, 0.28, 0.34], vertical_alignment="center"

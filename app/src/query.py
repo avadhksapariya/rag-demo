@@ -4,7 +4,7 @@ from typing import Union, Generator, Tuple
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.documents import Document
 
-from app.core.config import get_llm, DB_PATH
+from app.core.config import get_llm, DB_PATH, PRICING_PER_1M
 from app.src.ingestion.ingest import get_indexed_documents
 from app.storage.cache import semantic_cache
 from app.src.context.history_compressor import compress_chat_history
@@ -61,6 +61,18 @@ def _format_context(active_docs: list[Document], is_web: bool) -> Tuple[str, str
             for d in active_docs
         ]
     return "\n\n".join(chunks), sys_prompt, prefix
+
+
+def _compute_cost(
+    prompt_tokens: int, completion_tokens: int, is_free_tier: bool = True
+) -> float:
+    rate = (
+        PRICING_PER_1M["openrouter/free"] if is_free_tier else PRICING_PER_1M["gemini"]
+    )
+    cost = (prompt_tokens / 1_000_000) * rate["prompt"] + (
+        completion_tokens / 1_000_000
+    ) * rate["completion"]
+    return round(cost, 6)
 
 
 def answer_question(
@@ -229,6 +241,9 @@ def answer_question(
 
         def _stream_gen():
             accumulated = []
+            prompt_tokens = 0
+            completion_tokens = 0
+
             if prefix_note:
                 yield {"type": "token", "content": prefix_note}
                 accumulated.append(prefix_note)
@@ -244,6 +259,26 @@ def answer_question(
                     accumulated.append(token)
                     yield {"type": "token", "content": token}
 
+                # Extract token usage metadata from stream chunks
+                if hasattr(chunk, "usage_metadata") and chunk.usage_metadata:
+                    prompt_tokens = chunk.usage_metadata.get(
+                        "input_tokens", prompt_tokens
+                    )
+                    completion_tokens = chunk.usage_metadata.get(
+                        "output_tokens", completion_tokens
+                    )
+
+            # Fallback estimation if the model/proxy didn't emit usage metadata
+            if prompt_tokens == 0 or completion_tokens == 0:
+                raw_answer = "".join(accumulated)
+                prompt_tokens = prompt_tokens or (len(system_prompt + user_query) // 4)
+                completion_tokens = completion_tokens or (len(raw_answer) // 4)
+
+            total_tokens = prompt_tokens + completion_tokens
+            cost_usd = _compute_cost(
+                prompt_tokens, completion_tokens, is_free_tier=True
+            )
+
             total_duration = time.perf_counter() - start_time
             diagnostics = {
                 "total_time_sec": round(total_duration, 2),
@@ -252,6 +287,12 @@ def answer_question(
                 "is_web_fallback": is_web_fallback,
                 "cached": False,
                 "candidates": candidate_trace,
+                "usage": {
+                    "prompt_tokens": prompt_tokens,
+                    "completion_tokens": completion_tokens,
+                    "total_tokens": total_tokens,
+                    "cost_usd": cost_usd,
+                },
             }
 
             raw_answer = "".join(accumulated)
@@ -287,6 +328,12 @@ def answer_question(
         response.content if hasattr(response, "content") else str(response)
     )
 
+    usage_meta = getattr(response, "usage_metadata", {}) or {}
+    prompt_tokens = usage_meta.get("input_tokens", len(system_prompt + user_query) // 4)
+    completion_tokens = usage_meta.get("output_tokens", len(raw_answer) // 4)
+    total_tokens = prompt_tokens + completion_tokens
+    cost_usd = _compute_cost(prompt_tokens, completion_tokens, is_free_tier=True)
+
     grounding_meta = {"is_grounded": True, "score": 1.0}
     final_answer = raw_answer
 
@@ -320,5 +367,11 @@ def answer_question(
             "is_web_fallback": is_web_fallback,
             "cached": False,
             "candidates": candidate_trace,
+            "usage": {
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": total_tokens,
+                "cost_usd": cost_usd,
+            },
         },
     }

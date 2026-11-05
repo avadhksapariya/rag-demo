@@ -101,7 +101,7 @@ with main_chat_col:
                 if msg.get("diagnostics"):
                     diag = msg["diagnostics"]
                     with st.expander("⚡ Execution Diagnostics", expanded=False):
-                        d_col1, d_col2, d_col3 = st.columns(3)
+                        d_col1, d_col2, d_col3, d_col4 = st.columns(4)
                         d_col1.metric(
                             "Total Latency", f"{diag.get('total_time_sec', 0)}s"
                         )
@@ -112,6 +112,19 @@ with main_chat_col:
                         d_col3.metric(
                             "Chunks Evaluated", diag.get("chunks_retrieved", 0)
                         )
+
+                        usage = diag.get("usage", {})
+                        if usage:
+                            d_col4.metric(
+                                "Tokens Used",
+                                f"{usage.get('total_tokens', 0)} tok",
+                                (
+                                    f"${usage.get('cost_usd', 0.0):.4f} (Free tier)"
+                                    if usage.get("cost_usd") == 0
+                                    else f"${usage.get('cost_usd', 0.0):.5f}"
+                                ),
+                                delta_color="off",
+                            )
 
                         if diag.get("is_web_fallback"):
                             st.info("🌐 Mode: Corrective Web Search Fallback Triggered")
