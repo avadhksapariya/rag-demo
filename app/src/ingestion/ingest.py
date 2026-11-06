@@ -167,8 +167,19 @@ def process_pdf_and_ingest(
 
     # Combine the first few pages as representative context
     intro_sample = "\n".join([d.page_content for d in documents[:3]])
+
+    # Calculate metrics for the document profile card
+    calc_total_pages = len(pdf_document)
+    calc_total_chunks = len(child_docs)
+    calc_file_size_kb = pdf_path.stat().st_size / 1024 if pdf_path.exists() else 0.0
+
     generate_and_cache_document_prompts(
-        filename=display_name, sample_text=intro_sample, db_path=db_path
+        filename=display_name,
+        sample_text=intro_sample,
+        total_pages=calc_total_pages,
+        total_chunks=calc_total_chunks,
+        file_size_kb=calc_file_size_kb,
+        db_path=db_path,
     )
 
     # Initialize Embeddings & Vector Store
@@ -233,37 +244,59 @@ def process_pdf_and_ingest(
 
 
 def generate_and_cache_document_prompts(
-    filename: str, sample_text: str, db_path: str | Path = DB_PATH
-) -> list[str]:
+    filename: str,
+    sample_text: str,
+    total_pages: int = 1,
+    total_chunks: int = 0,
+    file_size_kb: float = 0.0,
+    db_path: str | Path = DB_PATH,
+) -> dict:
+    llm = get_llm()
+    prompt = (
+        "You are an executive document profiler. Given the following document excerpt, produce a JSON object with:\n"
+        "1. 'summary': A 2-sentence clear overview of what this document is about.\n"
+        "2. 'entities': A list of 4-6 prominent entities, characters, organizations, or themes.\n"
+        "3. 'prompts': Exactly 4 short, distinct questions a user might ask about this document.\n\n"
+        "Return STRICTLY a JSON object matching this schema:\n"
+        "{\n"
+        '  "summary": "...",\n'
+        '  "entities": ["entity1", "entity2", ...],\n'
+        '  "prompts": ["Q1?", "Q2?", "Q3?", "Q4?"]\n'
+        "}\n\n"
+        f"Document Excerpt:\n{sample_text[:3500]}"
+    )
+
     try:
-        llm = get_llm()
-        prompt = (
-            "Analyze the following document extract and generate exactly 4 short, insightful, "
-            "and distinct questions that a user would likely ask about this specific document.\n"
-            "Requirements:\n"
-            "- Focus on concrete topics, names, or key themes found directly in the text.\n"
-            "- Keep each question under 12 words.\n"
-            "- Return strictly a raw JSON array of 4 strings with no markdown fencing or commentary.\n\n"
-            f"Document Extract:\n{sample_text[:3500]}"
-        )
         response = llm.invoke([HumanMessage(content=prompt)])
         cleaned = response.content.strip().strip("`").replace("json\n", "").strip()
-        prompts = json.loads(cleaned)
-
-        if isinstance(prompts, list) and len(prompts) >= 4:
-            prompts = prompts[:4]
-        else:
-            raise ValueError("Invalid format from LLM")
+        data = json.loads(cleaned)
     except Exception as e:
-        print(f"⚠️ Could not generate dynamic prompts for {filename}: {e}")
-        prompts = [
-            f"What are the key points covered in {filename}?",
-            f"Summarize the background and core events in {filename}.",
-            f"What are the main findings or outcomes described?",
-            f"List the notable figures or entities mentioned.",
-        ]
+        print(f"⚠️ Could not generate dynamic summary for {filename}: {e}")
+        data = {
+            "summary": f"Document {filename} containing indexed reference text and structured records.",
+            "entities": ["Document Context", "Reference Data"],
+            "prompts": [
+                f"What are the key points covered in {filename}?",
+                f"Summarize the background and core events in {filename}.",
+                f"What are the main findings or outcomes described?",
+                f"List the notable figures or entities mentioned.",
+            ],
+        }
 
-    registry_file = Path(db_path) / "document_prompts.json"
+    # Attach structural file metrics
+    doc_profile = {
+        "filename": filename,
+        "summary": data.get("summary", ""),
+        "entities": data.get("entities", [])[:6],
+        "prompts": data.get("prompts", [])[:4],
+        "total_pages": total_pages,
+        "total_chunks": total_chunks,
+        "file_size_kb": round(file_size_kb, 1),
+        "indexed_at": time.strftime("%Y-%m-%d %H:%M"),
+    }
+
+    # Store in local registry
+    registry_file = Path(db_path) / "document_metadata.json"
     registry = {}
 
     if registry_file.exists():
@@ -273,11 +306,25 @@ def generate_and_cache_document_prompts(
         except Exception:
             registry = {}
 
-    registry[filename] = prompts
+    registry[filename] = doc_profile
     with open(registry_file, "w", encoding="utf-8") as f:
         json.dump(registry, f, indent=2, ensure_ascii=False)
 
-    return prompts
+    # Maintain backward compatibility with document_prompts.json
+    prompt_file = Path(db_path) / "document_prompts.json"
+    prompt_registry = {}
+
+    if prompt_file.exists():
+        try:
+            with open(prompt_file, "r", encoding="utf-8") as f:
+                prompt_registry = json.load(f)
+        except Exception:
+            prompt_registry = {}
+    prompt_registry[filename] = doc_profile["prompts"]
+    with open(prompt_file, "w", encoding="utf-8") as f:
+        json.dump(prompt_registry, f, indent=2, ensure_ascii=False)
+
+    return doc_profile
 
 
 # Retrieves a list of all unique file names indexed in ChromaDB.
@@ -385,15 +432,16 @@ def delete_document_from_index(filename: str, db_path: str | Path = DB_PATH):
         if matching_keys:
             store.mdelete(matching_keys)
 
-    # Remove from cached prompts registry
-    registry_file = Path(db_path) / "document_prompts.json"
-    if registry_file.exists():
-        try:
-            with open(registry_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            if filename in data:
-                del data[filename]
-                with open(registry_file, "w", encoding="utf-8") as f:
-                    json.dump(data, f, indent=2)
-        except Exception:
-            pass
+    # Remove from cached profiles and prompts registries
+    for registry_filename in ["document_metadata.json", "document_prompts.json"]:
+        registry_file = Path(db_path) / registry_filename
+        if registry_file.exists():
+            try:
+                with open(registry_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if filename in data:
+                    del data[filename]
+                    with open(registry_file, "w", encoding="utf-8") as f:
+                        json.dump(data, f, indent=2)
+            except Exception:
+                pass

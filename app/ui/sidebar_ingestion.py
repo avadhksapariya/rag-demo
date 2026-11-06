@@ -12,6 +12,7 @@ from app.src.ingestion.ingest import (
     get_indexed_file_hashes,
     delete_document_from_index,
 )
+from app.ui.document_card import show_document_summary_dialog
 
 
 def render_ingestion_tab():
@@ -101,13 +102,26 @@ def render_ingestion_tab():
     else:
         with st.container(height=220, border=True):
             for doc_name in current_indexed:
-                col_name, col_btn = st.columns([0.82, 0.18])
+                col_name, col_info, col_del = st.columns(
+                    [0.70, 0.15, 0.15], vertical_alignment="center"
+                )
+
                 with col_name:
                     st.markdown(
                         f"<div style='padding-top: 6px; font-size: 0.9em; word-break: break-all;'>📄 {doc_name}</div>",
                         unsafe_allow_html=True,
                     )
-                with col_btn:
+
+                with col_info:
+                    if st.button(
+                        "ℹ️",
+                        key=f"summary_btn_{doc_name}",
+                        help="View document executive overview",
+                        type="tertiary",
+                    ):
+                        show_document_summary_dialog(doc_name)
+
+                with col_del:
                     if st.button(
                         "🗑️",
                         key=f"del_doc_{doc_name}",
