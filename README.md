@@ -2,7 +2,7 @@
 
 A simple **Retrieval-Augmented Generation (RAG)** application that uses a PDF document as the knowledge source.
 
-The project uses **Hugging Face** (earlier Gemini) embedding model, **ChromaDB** for vector storage and retrieval, and a **OpenRouter Free LLM** with default fallback of **Gemini LLM** to generate answers based on the retrieved document context.  
+The project uses **Hugging Face** (earlier Gemini) embedding model, **ChromaDB** for vector storage and retrieval, and a **OpenRouter Free LLM** with default fallback of **Gemini LLM** to generate answers based on the retrieved document context.
 
 The application provides options to ingest the PDF, ask questions, or exit.
 
@@ -29,26 +29,25 @@ Question → Retrieval → LLM → Answer
 
 ## Necessary Commands
 
-- Virtual environment:  
-    - Create : `python -m venv .venv`  
-    - Activate : `.\venv\Scripts\Activate`
+- Virtual environment:
+  - Create : `python -m venv .venv`
+  - Activate : `.\venv\Scripts\Activate`
 
 - Install dependencies:  
-    `pip install -r requirements.txt`
+   `pip install -r requirements.txt`
 
-- Add Gemini API key to `.env` and run:  
-    - If only in *Terminal* : `py -m app.main`  
-    or  
-    - else *Streamlit Web Interface* : `py -m streamlit run app/app_st.py`
+- Add Gemini API key to `.env` and run:
+  - If only in _Terminal_ : `py -m app.main`  
+    or
+  - else _Streamlit Web Interface_ : `py -m streamlit run app/app_st.py`
 
-- Automated Evaluation Benchmarks:  
-    - `py -m tests.evaluate_rag`
+- Automated Evaluation Benchmarks:
+  - `py -m tests.evaluate_rag`
 
-### *Notes:*  
+### _Notes:_
+
 - Run the ingestion step before asking questions.
 
-- when changing embedding models...  
-    - remove old vector database : `Remove-Item -Recurse -Force app\vector_db`
-    - rebuild the vector database by running ingestion.
-
-
+- when changing embedding models...
+  - remove old vector database : `Remove-Item -Recurse -Force app\vector_db`
+  - rebuild the vector database by running ingestion.
